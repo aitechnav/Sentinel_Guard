@@ -80,10 +80,9 @@ dev = [
 sentinelguard = "sentinelguard.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/sentinelguard/sentinelguard"
-Documentation = "https://sentinelguard.readthedocs.io"
-Repository = "https://github.com/sentinelguard/sentinelguard"
-Issues = "https://github.com/sentinelguard/sentinelguard/issues"
+Homepage = "https://github.com/aitechnav/Sentinel_Guard"
+Repository = "https://github.com/aitechnav/Sentinel_Guard"
+Issues = "https://github.com/aitechnav/Sentinel_Guard/issues"
 
 [tool.setuptools.packages.find]
 include = ["sentinelguard*"]
