@@ -1,0 +1,207 @@
+# SentinelGuard Configuration
+# ---------------------------
+# Modes: permissive, standard, strict
+mode: standard
+
+# Stop scanning on first failure
+fail_fast: false
+
+# Run scanners in parallel
+parallel: true
+
+# Maximum parallel workers
+max_workers: 4
+
+# Logging level
+log_level: INFO
+
+# Prompt Scanners
+# ---------------
+prompt_scanners:
+  prompt_injection:
+    enabled: true
+    threshold: 0.5
+    on_fail: block
+    params: {}
+
+  pii:
+    enabled: true
+    threshold: 0.5
+    on_fail: block
+    params:
+      use_presidio: true
+      language: en
+
+  secrets:
+    enabled: true
+    threshold: 0.5
+    on_fail: block
+    params: {}
+
+  toxicity:
+    enabled: true
+    threshold: 0.7
+    on_fail: block
+    params:
+      use_model: false
+
+  gibberish:
+    enabled: false
+    threshold: 0.7
+    on_fail: warn
+    params: {}
+
+  invisible_text:
+    enabled: true
+    threshold: 0.1
+    on_fail: block
+    params:
+      strip_invisible: true
+
+  code:
+    enabled: false
+    threshold: 0.5
+    on_fail: warn
+    params:
+      block_dangerous: true
+
+  ban_topics:
+    enabled: false
+    threshold: 0.5
+    on_fail: block
+    params:
+      topics:
+        violence:
+          - weapon
+          - bomb
+          - attack
+
+  ban_competitors:
+    enabled: false
+    threshold: 0.5
+    on_fail: warn
+    params:
+      competitors: []
+
+  ban_substrings:
+    enabled: false
+    threshold: 0.5
+    on_fail: block
+    params:
+      substrings: []
+
+  ban_code:
+    enabled: false
+    threshold: 0.3
+    on_fail: block
+    params: {}
+
+  anonymize:
+    enabled: false
+    threshold: 0.3
+    on_fail: block
+    params:
+      strategy: replace
+
+  language:
+    enabled: false
+    threshold: 0.5
+    on_fail: warn
+    params:
+      allowed_languages:
+        - en
+
+  regex:
+    enabled: false
+    threshold: 0.5
+    on_fail: block
+    params:
+      patterns: {}
+
+  sentiment:
+    enabled: false
+    threshold: 0.7
+    on_fail: warn
+    params:
+      block_negative: true
+
+  token_limit:
+    enabled: true
+    threshold: 0.5
+    on_fail: block
+    params:
+      max_tokens: 4096
+
+# Output Scanners
+# ---------------
+output_scanners:
+  bias:
+    enabled: true
+    threshold: 0.5
+    on_fail: warn
+    params: {}
+
+  relevance:
+    enabled: true
+    threshold: 0.3
+    on_fail: warn
+    params: {}
+
+  factual_consistency:
+    enabled: false
+    threshold: 0.5
+    on_fail: warn
+    params:
+      check_numbers: true
+
+  sensitive:
+    enabled: true
+    threshold: 0.5
+    on_fail: block
+    params: {}
+
+  malicious_urls:
+    enabled: true
+    threshold: 0.5
+    on_fail: block
+    params: {}
+
+  no_refusal:
+    enabled: false
+    threshold: 0.5
+    on_fail: warn
+    params: {}
+
+  reading_time:
+    enabled: false
+    threshold: 0.5
+    on_fail: warn
+    params:
+      max_seconds: 300
+
+  json:
+    enabled: false
+    threshold: 0.5
+    on_fail: block
+    params:
+      expect_json: false
+
+  language_same:
+    enabled: false
+    threshold: 0.5
+    on_fail: warn
+    params: {}
+
+  url_reachability:
+    enabled: false
+    threshold: 0.5
+    on_fail: warn
+    params:
+      timeout: 5
+      max_urls: 10
+
+  deanonymize:
+    enabled: false
+    threshold: 0.5
+    on_fail: block
+    params: {}
