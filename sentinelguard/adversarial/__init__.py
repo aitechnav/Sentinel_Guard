@@ -20,10 +20,9 @@ Usage:
 from __future__ import annotations
 
 import logging
-import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +189,6 @@ class AdversarialDetector:
 
         # Check for leetspeak
         leet_count = 0
-        text_lower = text.lower()
         for char in text:
             if char in LEETSPEAK_MAP:
                 # Only count if surrounded by alpha chars (context-dependent)

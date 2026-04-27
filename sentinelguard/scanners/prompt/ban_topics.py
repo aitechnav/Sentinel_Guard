@@ -6,7 +6,6 @@ matching and optional semantic similarity.
 
 from __future__ import annotations
 
-import re
 from typing import Any, ClassVar, Dict, List, Optional
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner

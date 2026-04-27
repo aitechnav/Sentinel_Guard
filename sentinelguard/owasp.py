@@ -11,9 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 
-from sentinelguard.core.scanner import BaseScanner, ScannerRegistry
 
 
 class OWASPCategory(str, Enum):

@@ -1,6 +1,5 @@
 """Tests for PII detection and anonymization module."""
 
-import pytest
 
 from sentinelguard.pii import PIIDetector, PIIAnonymizer, PIIEntity
 

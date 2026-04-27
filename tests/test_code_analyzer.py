@@ -10,10 +10,6 @@ import pytest
 
 from patent_docs.analyzers.code_analyzer import (
     CodeAnalyzer,
-    ClassInfo,
-    MethodInfo,
-    ScannerInfo,
-    ModuleInfo,
 )
 
 

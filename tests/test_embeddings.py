@@ -1,6 +1,5 @@
 """Tests for embedding guardrails module."""
 
-import pytest
 
 from sentinelguard.embeddings import (
     EmbeddingGuardrail,

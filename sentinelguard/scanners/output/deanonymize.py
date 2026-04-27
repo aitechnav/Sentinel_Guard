@@ -6,7 +6,6 @@ restoring original PII values in the output.
 
 from __future__ import annotations
 
-import re
 from typing import Any, ClassVar, Dict, Optional
 
 from sentinelguard.core.scanner import OutputScanner, RiskLevel, ScanResult, register_scanner

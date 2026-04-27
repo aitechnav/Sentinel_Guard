@@ -10,8 +10,6 @@ from sentinelguard import (
     AggregatedResult,
     RiskLevel,
     ScannerRegistry,
-    BaseScanner,
-    register_scanner,
 )
 from sentinelguard.core.config import GuardMode, Settings
 from sentinelguard.core.pipeline import ScannerPipeline

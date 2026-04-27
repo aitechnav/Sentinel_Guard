@@ -7,7 +7,6 @@ to allowed languages.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from typing import Any, ClassVar, Dict, List, Optional
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner

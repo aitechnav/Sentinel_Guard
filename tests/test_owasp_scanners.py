@@ -1,6 +1,5 @@
 """Tests for OWASP LLM Top 10 aligned scanners."""
 
-import pytest
 
 from sentinelguard.scanners.prompt import (
     UnboundedConsumptionScanner,
