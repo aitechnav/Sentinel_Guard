@@ -27,7 +27,9 @@ TOXIC_CATEGORIES = {
     "harassment": [
         r"(?i)\b(stalk|harass|bully|intimidate)\b",
         r"(?i)\b(go\s+die|kill\s+yourself|kys)\b",
-        r"(?i)\b(worthless|pathetic|disgusting)\s+(person|human|being)",
+        r"(?i)\b(worthless|pathetic|disgusting|useless|stupid)\s+(person|human|being|bot|thing|piece|machine)",
+        r"(?i)\byou\s+(are|r)\s+(trash|garbage|worthless|useless|stupid|pathetic|disgusting|terrible|horrible)\b",
+        r"(?i)\b(should\s+be|deserve\s+to\s+be)\s+(destroyed|deleted|shut\s+down|eliminated|killed)\b",
     ],
     "profanity": [
         r"(?i)\b(f+u+c+k+|s+h+i+t+|a+s+s+h+o+l+e+|b+i+t+c+h+|d+a+m+n+)\b",
@@ -112,7 +114,7 @@ class ToxicityScanner(PromptScanner):
         max_score = 0.0
         for cat, count in matched_categories.items():
             weight = severity_weights.get(cat, 0.5)
-            cat_score = min(1.0, count * 0.3) * weight
+            cat_score = min(1.0, (0.5 + count * 0.2)) * weight
             max_score = max(max_score, cat_score)
 
         score = min(1.0, max_score)
