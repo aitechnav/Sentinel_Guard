@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, List, Optional
 
 from sentinelguard.core.scanner import OutputScanner, RiskLevel, ScanResult, register_scanner
 

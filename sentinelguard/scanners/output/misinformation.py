@@ -7,7 +7,7 @@ signals, and fabricated details in LLM outputs.
 from __future__ import annotations
 
 import re
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict
 
 from sentinelguard.core.scanner import OutputScanner, RiskLevel, ScanResult, register_scanner
 

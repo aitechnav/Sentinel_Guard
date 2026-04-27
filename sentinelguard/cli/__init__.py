@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 from typing import List, Optional
 
 
@@ -149,11 +148,11 @@ def _handle_scan(args: argparse.Namespace) -> int:
         print(f"  Latency: {result.total_latency_ms:.1f}ms")
 
         if result.failed_scanners:
-            print(f"\n  Failed Scanners:")
+            print("\n  Failed Scanners:")
             for name in result.failed_scanners:
                 print(f"    - {name}")
 
-        print(f"\n  Scanner Results:")
+        print("\n  Scanner Results:")
         for r in result.results:
             icon = "+" if r.is_valid else "x"
             print(

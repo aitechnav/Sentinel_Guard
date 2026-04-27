@@ -8,7 +8,7 @@ to completely prevent code from being submitted.
 from __future__ import annotations
 
 import re
-from typing import Any, ClassVar, List, Optional
+from typing import Any, ClassVar
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
 

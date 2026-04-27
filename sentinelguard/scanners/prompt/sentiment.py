@@ -7,7 +7,7 @@ negative or overly aggressive content.
 from __future__ import annotations
 
 import re
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
 
@@ -61,7 +61,6 @@ class SentimentScanner(PromptScanner):
             )
 
         words = set(re.findall(r"\b\w+\b", text.lower()))
-        total_words = max(len(words), 1)
 
         pos_matches = words & POSITIVE_WORDS
         neg_matches = words & NEGATIVE_WORDS

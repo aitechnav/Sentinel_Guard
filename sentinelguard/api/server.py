@@ -10,10 +10,9 @@ Usage:
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any, Dict, List, Optional
 
-from sentinelguard.core.config import GuardConfig, ScannerConfig
+from sentinelguard.core.config import GuardConfig
 from sentinelguard.core.guard import SentinelGuard
 
 logger = logging.getLogger(__name__)

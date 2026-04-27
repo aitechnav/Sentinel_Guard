@@ -10,9 +10,9 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
-from sentinelguard.core.config import GuardConfig, ScannerConfig
+from sentinelguard.core.config import GuardConfig
 from sentinelguard.core.scanner import (
     AggregatedResult,
     BaseScanner,

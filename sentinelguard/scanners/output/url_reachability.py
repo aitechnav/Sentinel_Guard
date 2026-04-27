@@ -7,7 +7,7 @@ valid HTTP responses.
 from __future__ import annotations
 
 import re
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from sentinelguard.core.scanner import OutputScanner, RiskLevel, ScanResult, register_scanner

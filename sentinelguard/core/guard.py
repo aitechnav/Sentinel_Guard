@@ -9,13 +9,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from sentinelguard.core.config import GuardConfig, GuardMode, ScannerConfig
+from sentinelguard.core.config import GuardConfig, GuardMode
 from sentinelguard.core.pipeline import ScannerPipeline
 from sentinelguard.core.scanner import (
     AggregatedResult,
     BaseScanner,
     ScannerRegistry,
-    ScanResult,
 )
 
 logger = logging.getLogger(__name__)

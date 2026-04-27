@@ -7,7 +7,6 @@ using token overlap and semantic similarity.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from typing import Any, ClassVar, Set
 
 from sentinelguard.core.scanner import OutputScanner, RiskLevel, ScanResult, register_scanner

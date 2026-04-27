@@ -8,7 +8,7 @@ the prompt was filtered incorrectly.
 from __future__ import annotations
 
 import re
-from typing import Any, ClassVar, List
+from typing import Any, ClassVar
 
 from sentinelguard.core.scanner import OutputScanner, RiskLevel, ScanResult, register_scanner
 

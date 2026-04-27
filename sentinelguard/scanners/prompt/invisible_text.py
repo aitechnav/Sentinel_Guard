@@ -6,7 +6,6 @@ text that could be used for prompt injection or data exfiltration.
 
 from __future__ import annotations
 
-import re
 from typing import Any, ClassVar
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner

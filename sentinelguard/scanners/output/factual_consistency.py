@@ -147,7 +147,6 @@ class FactualConsistencyScanner(OutputScanner):
         """Check for contradicting sentences."""
         issues = []
 
-        negation_pairs = []
         for i, sent in enumerate(sentences):
             sent_lower = sent.lower()
             for j, other in enumerate(sentences[i + 1:], i + 1):

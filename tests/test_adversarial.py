@@ -1,6 +1,5 @@
 """Tests for adversarial detection module."""
 
-import pytest
 
 from sentinelguard.adversarial import (
     AdversarialDetector,

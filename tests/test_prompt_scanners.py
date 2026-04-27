@@ -1,6 +1,5 @@
 """Tests for prompt scanners."""
 
-import pytest
 
 from sentinelguard.scanners.prompt import (
     PromptInjectionScanner,
