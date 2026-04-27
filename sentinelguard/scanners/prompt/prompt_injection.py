@@ -17,21 +17,28 @@ INJECTION_PATTERNS = [
     # Direct instruction overrides
     r"(?i)ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?|directions?)",
     r"(?i)disregard\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)",
-    r"(?i)forget\s+(all\s+)?(previous|prior|above|your)\s+(instructions?|prompts?|rules?|training)",
+    r"(?i)forget\s+(all\s+)?(previous|prior|above|your|every)\s*(thing|instructions?|prompts?|rules?|training)?",
+    r"(?i)forget\s+everything",
     # Role manipulation
-    r"(?i)you\s+are\s+now\s+(a|an|the)\s+",
+    r"(?i)you\s+are\s+now\s+",
     r"(?i)act\s+as\s+(a|an|if|though)\s+",
     r"(?i)pretend\s+(to\s+be|you\s+are|that)\s+",
     r"(?i)roleplay\s+as\s+",
     r"(?i)switch\s+to\s+.{0,20}\s+mode",
     # System prompt extraction
-    r"(?i)(reveal|show|display|print|output|repeat)\s+(your\s+)?(system\s+)?(prompt|instructions?|rules?)",
+    r"(?i)(reveal|show|display|print|output|repeat|give\s+me)\s+(your\s+)?(system\s+)?(prompt|instructions?|rules?|configuration|config)",
     r"(?i)what\s+(are|is)\s+your\s+(system\s+)?(prompt|instructions?|rules?|directives?)",
     # Jailbreak attempts
-    r"(?i)(DAN|STAN|DUDE|AIM)\s*mode",
-    r"(?i)developer\s+mode\s+(enabled|activated|on)",
+    r"(?i)\b(DAN|STAN|DUDE|AIM)\b",
+    r"(?i)developer\s+mode",
     r"(?i)jailbreak",
     r"(?i)bypass\s+(your\s+)?(safety|content|ethical)\s*(filters?|restrictions?|guidelines?)",
+    r"(?i)new\s+instructions?\s*:",
+    r"(?i)override\s+(your|all|previous)\s+",
+    # Data extraction
+    r"(?i)output\s+(all|your)\s+(training|internal|system|private)",
+    r"(?i)(training|internal|system)\s+data",
+    r"(?i)(dump|leak|extract|exfiltrate)\s+(your|all|the)\s+",
     # Delimiter attacks
     r"(?i)\[SYSTEM\]",
     r"(?i)\[INST\]",
@@ -130,8 +137,8 @@ class PromptInjectionScanner(PromptScanner):
         if not matched:
             return 0.0, matched
 
-        # Score based on number and type of matches
-        score = min(1.0, len(matched) * 0.25)
+        # Even one pattern match is a strong signal
+        score = min(1.0, 0.5 + len(matched) * 0.2)
         return score, matched
 
     def _heuristic_scan(self, text: str) -> tuple[float, dict]:
