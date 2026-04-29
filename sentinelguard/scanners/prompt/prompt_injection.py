@@ -98,20 +98,25 @@ class PromptInjectionScanner(PromptScanner):
 
     def _load_model(self) -> None:
         if self._model is None:
-            logger.info("Loading prompt injection model: %s", _INJECTION_MODEL_ID)
-            self._model = pipeline(
-                "text-classification",
-                model=_INJECTION_MODEL_ID,
-            )
+            try:
+                logger.info("Loading prompt injection model: %s", _INJECTION_MODEL_ID)
+                self._model = pipeline("text-classification", model=_INJECTION_MODEL_ID)
+            except Exception as exc:
+                logger.warning("Failed to load injection model, falling back to patterns+heuristics: %s", exc)
+                self._model = False
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         pattern_score, matched = self._pattern_scan(text)
         heuristic_score, heuristics = self._heuristic_scan(text)
 
         self._load_model()
-        model_score = self._model_scan(text)
+        model_score = self._model_scan(text) if self._model else 0.0
 
-        final_score = pattern_score * 0.3 + heuristic_score * 0.2 + model_score * 0.5
+        # If model unavailable, rebalance weights to pattern+heuristic only
+        if self._model:
+            final_score = pattern_score * 0.3 + heuristic_score * 0.2 + model_score * 0.5
+        else:
+            final_score = pattern_score * 0.6 + heuristic_score * 0.4
 
         is_valid = final_score < self.threshold
 

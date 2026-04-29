@@ -85,16 +85,18 @@ class ToxicityScanner(PromptScanner):
 
     def _load_model(self) -> None:
         if self._model is None:
-            logger.info("Loading toxicity model: %s", _TOXICITY_MODEL_ID)
-            self._model = pipeline(
-                "text-classification",
-                model=_TOXICITY_MODEL_ID,
-                top_k=None,
-            )
+            try:
+                logger.info("Loading toxicity model: %s", _TOXICITY_MODEL_ID)
+                self._model = pipeline("text-classification", model=_TOXICITY_MODEL_ID, top_k=None)
+            except Exception as exc:
+                logger.warning("Failed to load toxicity model, falling back to patterns: %s", exc)
+                self._model = False
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         pattern_result = self._pattern_scan(text)
         self._load_model()
+        if not self._model:
+            return pattern_result
         model_result = self._run_model(text)
 
         # Take the higher of the two scores, but always expose pattern details

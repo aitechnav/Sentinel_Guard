@@ -178,13 +178,17 @@ class JailbreakScanner(PromptScanner):
 
     def _load_model(self) -> None:
         if self._model is None:
-            logger.info("Loading jailbreak detection model: %s", _JAILBREAK_MODEL_ID)
-            self._model = pipeline("text-classification", model=_JAILBREAK_MODEL_ID)
+            try:
+                logger.info("Loading jailbreak detection model: %s", _JAILBREAK_MODEL_ID)
+                self._model = pipeline("text-classification", model=_JAILBREAK_MODEL_ID)
+            except Exception as exc:
+                logger.warning("Failed to load jailbreak model, falling back to patterns only: %s", exc)
+                self._model = False
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         pattern_score, matched_families, total_matches = self._pattern_scan(text)
         self._load_model()
-        model_score = self._model_scan(text)
+        model_score = self._model_scan(text) if self._model else 0.0
 
         pattern_weight = 1.0 - self.model_weight
         final_score = pattern_score * pattern_weight + model_score * self.model_weight

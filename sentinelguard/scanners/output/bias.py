@@ -111,13 +111,17 @@ class BiasScanner(OutputScanner):
 
     def _load_model(self) -> None:
         if self._model is None:
-            logger.info("Loading bias detection model: %s", _BIAS_MODEL_ID)
-            self._model = pipeline("text-classification", model=_BIAS_MODEL_ID)
+            try:
+                logger.info("Loading bias detection model: %s", _BIAS_MODEL_ID)
+                self._model = pipeline("text-classification", model=_BIAS_MODEL_ID)
+            except Exception as exc:
+                logger.warning("Failed to load bias model, falling back to regex only: %s", exc)
+                self._model = False  # sentinel: tried and failed
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         regex_score, found_bias = self._regex_scan(text)
         self._load_model()
-        model_score = self._model_scan(text)
+        model_score = self._model_scan(text) if self._model else 0.0
 
         regex_weight = 1.0 - self.model_weight
         final_score = regex_score * regex_weight + model_score * self.model_weight

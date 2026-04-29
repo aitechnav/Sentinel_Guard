@@ -24,8 +24,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from presidio_analyzer import AnalyzerEngine
-from presidio_anonymizer import AnonymizerEngine
-from presidio_anonymizer.entities import OperatorConfig
 
 logger = logging.getLogger(__name__)
 
