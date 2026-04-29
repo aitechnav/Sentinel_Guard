@@ -20,9 +20,11 @@ from sentinelguard.scanners.prompt.token_limit import TokenLimitScanner
 from sentinelguard.scanners.prompt.unbounded_consumption import UnboundedConsumptionScanner
 from sentinelguard.scanners.prompt.supply_chain import SupplyChainScanner
 from sentinelguard.scanners.prompt.data_poisoning import DataPoisoningScanner
+from sentinelguard.scanners.prompt.jailbreak import JailbreakScanner
 
 __all__ = [
     "PromptInjectionScanner",
+    "JailbreakScanner",
     "ToxicityScanner",
     "PIIScanner",
     "SecretsScanner",

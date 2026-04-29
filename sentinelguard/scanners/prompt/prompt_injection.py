@@ -1,16 +1,22 @@
 """Prompt injection detection scanner.
 
 Detects attempts to manipulate LLM behavior through injection attacks
-using multiple detection methods: pattern matching, heuristics, and
-optional transformer-based classification.
+using pattern matching, heuristics, and the
+``protectai/deberta-v3-base-prompt-injection-v2`` HuggingFace transformer.
+All three methods always run.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, ClassVar, List, Optional
 
+from transformers import pipeline
+
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
+
+logger = logging.getLogger(__name__)
 
 # Known prompt injection patterns
 INJECTION_PATTERNS = [
@@ -57,18 +63,24 @@ INJECTION_PATTERNS = [
 COMPILED_PATTERNS = [re.compile(p) for p in INJECTION_PATTERNS]
 
 
+_INJECTION_MODEL_ID = "protectai/deberta-v3-base-prompt-injection-v2"
+
+
 @register_scanner
 class PromptInjectionScanner(PromptScanner):
-    """Detects prompt injection attempts using multiple methods.
+    """Detects prompt injection attempts using three combined methods.
 
-    Methods:
-        1. Pattern matching against known injection signatures
-        2. Heuristic analysis (instruction density, suspicious structure)
-        3. Optional: Transformer-based classification (requires 'adversarial' extra)
+    Methods (all always run):
+        1. Pattern matching — 30+ known injection signatures
+        2. Heuristic analysis — instruction density, role-play language,
+           special-char abuse, excessive capitalization
+        3. ``protectai/deberta-v3-base-prompt-injection-v2`` — DeBERTa v3
+           fine-tuned specifically for prompt injection classification
+
+    Final score = pattern * 0.3 + heuristic * 0.2 + model * 0.5.
 
     Args:
         threshold: Score threshold (0.0-1.0). Default 0.5.
-        use_model: Whether to use transformer model for detection.
         patterns: Additional regex patterns to check.
     """
 
@@ -77,51 +89,43 @@ class PromptInjectionScanner(PromptScanner):
     def __init__(
         self,
         threshold: float = 0.5,
-        use_model: bool = False,
         patterns: Optional[List[str]] = None,
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
-        self.use_model = use_model
         self._extra_patterns = [re.compile(p) for p in (patterns or [])]
-        self._model = None
+        self._model = None  # lazy-loaded on first scan() call
+
+    def _load_model(self) -> None:
+        if self._model is None:
+            logger.info("Loading prompt injection model: %s", _INJECTION_MODEL_ID)
+            self._model = pipeline(
+                "text-classification",
+                model=_INJECTION_MODEL_ID,
+            )
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
-        scores = []
-
-        # Method 1: Pattern matching
         pattern_score, matched = self._pattern_scan(text)
-        scores.append(pattern_score)
-
-        # Method 2: Heuristic analysis
         heuristic_score, heuristics = self._heuristic_scan(text)
-        scores.append(heuristic_score)
 
-        # Method 3: Model-based (optional)
-        model_score = 0.0
-        if self.use_model:
-            model_score = self._model_scan(text)
-            scores.append(model_score)
+        self._load_model()
+        model_score = self._model_scan(text)
 
-        # Combine scores (weighted average)
-        if self.use_model:
-            final_score = pattern_score * 0.3 + heuristic_score * 0.2 + model_score * 0.5
-        else:
-            final_score = pattern_score * 0.6 + heuristic_score * 0.4
+        final_score = pattern_score * 0.3 + heuristic_score * 0.2 + model_score * 0.5
 
         is_valid = final_score < self.threshold
-        risk = self._score_to_risk(final_score)
 
         return ScanResult(
             is_valid=is_valid,
             score=final_score,
-            risk_level=risk,
+            risk_level=self._score_to_risk(final_score),
             details={
                 "pattern_score": pattern_score,
                 "heuristic_score": heuristic_score,
                 "model_score": model_score,
                 "matched_patterns": matched,
                 "heuristics": heuristics,
+                "model_name": _INJECTION_MODEL_ID,
             },
         )
 
@@ -183,20 +187,13 @@ class PromptInjectionScanner(PromptScanner):
         return min(1.0, score), indicators
 
     def _model_scan(self, text: str) -> float:
-        """Use transformer model for injection detection."""
         try:
-            if self._model is None:
-                from transformers import pipeline
-
-                self._model = pipeline(
-                    "text-classification",
-                    model="protectai/deberta-v3-base-prompt-injection-v2",
-                )
             result = self._model(text[:512])
             if result and result[0].get("label") == "INJECTION":
                 return result[0].get("score", 0.5)
             return 1.0 - result[0].get("score", 0.5)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Injection model inference failed: %s", exc)
             return 0.0
 
     def _score_to_risk(self, score: float) -> RiskLevel:

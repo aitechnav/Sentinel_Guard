@@ -1,41 +1,41 @@
 """Anonymize scanner.
 
-Detects and replaces PII with anonymized placeholders.
-Supports multiple anonymization strategies.
+Detects and replaces PII with anonymized placeholders using Microsoft Presidio
+(30+ entity types). Mandatory dependency — no regex fallback.
 """
 
 from __future__ import annotations
 
-import hashlib
-import re
 from typing import Any, ClassVar, Dict, List, Optional
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
-
-# Reuse PII patterns
-ANON_PATTERNS = {
-    "EMAIL": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
-    "PHONE": re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
-    "SSN": re.compile(r"\b\d{3}[-]?\d{2}[-]?\d{4}\b"),
-    "CREDIT_CARD": re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b"),
-    "IP_ADDRESS": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-}
+from sentinelguard.pii import PIIAnonymizer, PIIDetector
 
 
 @register_scanner
 class AnonymizeScanner(PromptScanner):
-    """Detects PII and provides anonymized output.
+    """Detects and anonymizes PII in prompts before they reach the LLM.
+
+    Uses Microsoft Presidio for detection (30+ entity types: EMAIL_ADDRESS,
+    PHONE_NUMBER, CREDIT_CARD, US_SSN, IBAN_CODE, US_PASSPORT, IP_ADDRESS,
+    PERSON, LOCATION, CRYPTO, IN_AADHAAR, AU_TFN, SG_NRIC_FIN, and more).
 
     Strategies:
-        - replace: Replace with type placeholder (e.g., <EMAIL>)
-        - mask: Replace with asterisks (e.g., *****)
-        - hash: Replace with hash (e.g., a1b2c3d4)
-        - redact: Remove entirely
+        - replace: Replace with type placeholder, e.g. ``<EMAIL_ADDRESS>``
+        - mask:    Replace with asterisks
+        - hash:    Replace with a short SHA-256 hash
+        - redact:  Remove entirely
+        - fake:    Replace with synthetic data (requires ``faker``)
 
     Args:
         threshold: Score threshold (0.0-1.0). Default 0.3.
-        strategy: Anonymization strategy. Default "replace".
-        entities: Entity types to anonymize. None = all.
+        strategy: Default anonymization strategy. Default "replace".
+        entities: Entity types to detect/anonymize. ``None`` = all available.
+        language: Language hint for Presidio NLP engine. Default "en".
+        entity_strategies: Per-entity-type strategy overrides, e.g.
+            ``{"PHONE_NUMBER": "mask", "EMAIL_ADDRESS": "redact"}``.
+        score_threshold: Minimum Presidio confidence to treat as PII.
+            Default 0.5.
     """
 
     scanner_name: ClassVar[str] = "anonymize"
@@ -45,73 +45,69 @@ class AnonymizeScanner(PromptScanner):
         threshold: float = 0.3,
         strategy: str = "replace",
         entities: Optional[List[str]] = None,
+        language: str = "en",
+        entity_strategies: Optional[Dict[str, str]] = None,
+        score_threshold: float = 0.5,
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
         self.strategy = strategy
-        self.entities = entities
-        self._mapping: Dict[str, str] = {}
+        self._detector = PIIDetector(
+            language=language,
+            entities=entities,
+            score_threshold=score_threshold,
+        )
+        self._anonymizer = PIIAnonymizer(
+            default_strategy=strategy,
+            entity_strategies=entity_strategies or {},
+        )
+        self._last_mapping: Dict[str, str] = {}
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
-        found = {}
-        anonymized_text = text
-        self._mapping = {}
+        detected = self._detector.detect(text)
 
-        patterns = ANON_PATTERNS
-        if self.entities:
-            patterns = {
-                k: v for k, v in ANON_PATTERNS.items()
-                if k in [e.upper() for e in self.entities]
-            }
-
-        for entity_type, pattern in patterns.items():
-            matches = list(pattern.finditer(text))
-            if matches:
-                found[entity_type] = len(matches)
-                for i, match in enumerate(reversed(matches)):
-                    original = match.group()
-                    replacement = self._anonymize(original, entity_type, i)
-                    self._mapping[replacement] = original
-                    anonymized_text = (
-                        anonymized_text[:match.start()]
-                        + replacement
-                        + anonymized_text[match.end():]
-                    )
-
-        if not found:
+        if not detected:
             return ScanResult(
                 is_valid=True,
                 score=0.0,
                 risk_level=RiskLevel.LOW,
-                details={"entities_found": {}, "strategy": self.strategy},
+                details={"entities_found": {}, "strategy": self.strategy, "method": "presidio"},
             )
 
-        score = min(1.0, sum(found.values()) * 0.2)
+        anonymized = self._anonymizer.anonymize(text, detected)
+        self._last_mapping = anonymized.mapping
+
+        entity_counts: Dict[str, int] = {}
+        for entity in detected:
+            entity_counts[entity.entity_type] = entity_counts.get(entity.entity_type, 0) + 1
+
+        score = min(1.0, max(e.score for e in detected))
         is_valid = score < self.threshold
 
         return ScanResult(
             is_valid=is_valid,
             score=score,
-            risk_level=RiskLevel.MEDIUM,
-            sanitized_output=anonymized_text,
+            risk_level=self._score_to_risk(score),
+            sanitized_output=anonymized.text,
             details={
-                "entities_found": found,
+                "entities_found": entity_counts,
+                "entity_types": list(entity_counts.keys()),
+                "total_entities": len(detected),
                 "strategy": self.strategy,
-                "mapping_available": bool(self._mapping),
+                "method": "presidio",
+                "mapping_available": bool(self._last_mapping),
             },
         )
 
-    def _anonymize(self, value: str, entity_type: str, index: int) -> str:
-        if self.strategy == "replace":
-            return f"<{entity_type}_{index}>"
-        elif self.strategy == "mask":
-            return "*" * len(value)
-        elif self.strategy == "hash":
-            return hashlib.sha256(value.encode()).hexdigest()[:8]
-        elif self.strategy == "redact":
-            return "[REDACTED]"
-        return f"<{entity_type}>"
+    def _score_to_risk(self, score: float) -> RiskLevel:
+        if score >= 0.8:
+            return RiskLevel.CRITICAL
+        elif score >= 0.6:
+            return RiskLevel.HIGH
+        elif score >= 0.3:
+            return RiskLevel.MEDIUM
+        return RiskLevel.LOW
 
     def get_mapping(self) -> Dict[str, str]:
-        """Return the mapping of anonymized values to originals."""
-        return dict(self._mapping)
+        """Return the mapping of anonymized tokens to their original values."""
+        return dict(self._last_mapping)

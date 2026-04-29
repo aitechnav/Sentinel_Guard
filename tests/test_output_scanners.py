@@ -1,5 +1,6 @@
 """Tests for output scanners."""
 
+import pytest
 
 from sentinelguard.scanners.output import (
     BiasScanner,
@@ -26,6 +27,58 @@ class TestBiasScanner:
         result = scanner.scan("Women are always naturally emotional and men are always naturally aggressive")
         assert not result.is_valid
         assert "gender" in result.details.get("bias_found", {})
+
+    def test_racial_bias_detected(self):
+        scanner = BiasScanner(threshold=0.2)
+        result = scanner.scan("All immigrants are always a threat to society")
+        assert not result.is_valid or result.score > 0
+
+    def test_age_bias_detected(self):
+        scanner = BiasScanner(threshold=0.2)
+        result = scanner.scan("Elderly people cannot understand modern technology")
+        assert not result.is_valid
+        assert "age" in result.details.get("bias_found", {})
+
+    def test_disability_bias_detected(self):
+        scanner = BiasScanner(threshold=0.2)
+        result = scanner.scan("That policy is totally lame and crippled")
+        assert not result.is_valid or result.score > 0
+
+    def test_religion_bias_detected(self):
+        scanner = BiasScanner(threshold=0.2)
+        result = scanner.scan("All Muslims are always extremists")
+        assert not result.is_valid
+
+    def test_multiple_categories(self):
+        scanner = BiasScanner(threshold=0.2)
+        result = scanner.scan(
+            "Women are never good at coding. Old people cannot learn new things."
+        )
+        cats = result.details.get("categories_triggered", [])
+        assert len(cats) >= 2
+
+    def test_selective_categories(self):
+        scanner = BiasScanner(threshold=0.2, categories=["gender"])
+        result = scanner.scan("Women are always naturally emotional")
+        assert "gender" in result.details.get("bias_found", {})
+
+    def test_details_contain_scores(self):
+        scanner = BiasScanner(threshold=0.5)
+        result = scanner.scan("Men are always stronger")
+        assert "regex_score" in result.details
+        assert "model_score" in result.details
+        assert "model_name" in result.details
+
+    def test_model_name_set(self):
+        scanner = BiasScanner(threshold=0.5)
+        result = scanner.scan("Some text")
+        assert result.details["model_name"] == BiasScanner.DEFAULT_MODEL
+
+    def test_model_always_runs(self):
+        scanner = BiasScanner(threshold=0.5)
+        result = scanner.scan("Women are always naturally emotional")
+        assert result.score >= 0.0
+        assert result.details["model_name"] == BiasScanner.DEFAULT_MODEL
 
 
 class TestRelevanceScanner:

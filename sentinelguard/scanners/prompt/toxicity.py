@@ -1,15 +1,23 @@
 """Toxicity detection scanner.
 
-Identifies toxic, hateful, or offensive content using keyword matching
-and optional transformer-based classification.
+Identifies toxic, hateful, or offensive content using keyword/pattern
+matching combined with the ``unitary/toxic-bert`` HuggingFace transformer.
+Both methods always run.
 """
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Any, ClassVar, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
+
+from transformers import pipeline
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
+
+logger = logging.getLogger(__name__)
+
+_TOXICITY_MODEL_ID = "unitary/toxic-bert"
 
 # Categories of toxic content
 TOXIC_CATEGORIES = {
@@ -54,13 +62,13 @@ COMPILED_TOXIC = {
 class ToxicityScanner(PromptScanner):
     """Detects toxic, hateful, or offensive content.
 
-    Uses keyword/pattern matching by default, with optional transformer
-    model for more accurate classification.
+    Combines keyword/pattern matching (hate speech, threats, harassment,
+    profanity, sexual content, self-harm) with ``unitary/toxic-bert``
+    HuggingFace transformer. Both always run; final score takes the max.
 
     Args:
         threshold: Score threshold (0.0-1.0). Default 0.7.
-        use_model: Use transformer-based toxicity classifier.
-        categories: List of toxic categories to check. None = all.
+        categories: Toxic categories to check. ``None`` = all.
     """
 
     scanner_name: ClassVar[str] = "toxicity"
@@ -68,19 +76,37 @@ class ToxicityScanner(PromptScanner):
     def __init__(
         self,
         threshold: float = 0.7,
-        use_model: bool = False,
         categories: Optional[List[str]] = None,
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
-        self.use_model = use_model
         self.categories = categories or list(TOXIC_CATEGORIES.keys())
-        self._model = None
+        self._model = None  # lazy-loaded on first scan() call
+
+    def _load_model(self) -> None:
+        if self._model is None:
+            logger.info("Loading toxicity model: %s", _TOXICITY_MODEL_ID)
+            self._model = pipeline(
+                "text-classification",
+                model=_TOXICITY_MODEL_ID,
+                top_k=None,
+            )
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
-        if self.use_model:
-            return self._model_scan(text)
-        return self._pattern_scan(text)
+        pattern_result = self._pattern_scan(text)
+        self._load_model()
+        model_result = self._run_model(text)
+
+        # Take the higher of the two scores, but always expose pattern details
+        if model_result.score > pattern_result.score:
+            # Merge pattern details into the model result so callers always see matched_categories
+            model_result.details.update({
+                "matched_categories": pattern_result.details.get("matched_categories", {}),
+                "total_matches": pattern_result.details.get("total_matches", 0),
+                "pattern_score": pattern_result.score,
+            })
+            return model_result
+        return pattern_result
 
     def _pattern_scan(self, text: str) -> ScanResult:
         """Pattern-based toxicity detection."""
@@ -130,36 +156,24 @@ class ToxicityScanner(PromptScanner):
             },
         )
 
-    def _model_scan(self, text: str) -> ScanResult:
-        """Transformer-based toxicity detection."""
+    def _run_model(self, text: str) -> ScanResult:
         try:
-            if self._model is None:
-                from transformers import pipeline
-
-                self._model = pipeline(
-                    "text-classification",
-                    model="unitary/toxic-bert",
-                    top_k=None,
-                )
             results = self._model(text[:512])
             if results:
-                labels = {r["label"]: r["score"] for r in results[0]} if isinstance(results[0], list) else {results[0]["label"]: results[0]["score"]}
+                inner = results[0] if isinstance(results[0], list) else results
+                labels: Dict[str, float] = {
+                    r["label"]: r["score"] for r in (inner if isinstance(inner, list) else [inner])
+                }
                 toxic_score = labels.get("toxic", 0.0)
                 is_valid = toxic_score < self.threshold
                 return ScanResult(
                     is_valid=is_valid,
                     score=toxic_score,
                     risk_level=self._score_to_risk(toxic_score),
-                    details={"model_labels": labels},
+                    details={"model_labels": labels, "model_name": _TOXICITY_MODEL_ID},
                 )
-        except Exception as e:
-            return ScanResult(
-                is_valid=True,
-                score=0.0,
-                risk_level=RiskLevel.LOW,
-                details={"error": str(e), "fallback": "pattern"},
-            )
-
+        except Exception as exc:
+            logger.warning("Toxicity model inference failed: %s", exc)
         return ScanResult(is_valid=True, score=0.0, risk_level=RiskLevel.LOW)
 
     def _score_to_risk(self, score: float) -> RiskLevel:
