@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Any, ClassVar, Dict, List, Optional
 
-from sentinelguard.core.scanner import BaseScanner, ScannerType, PromptScanner, RiskLevel, ScanResult, register_scanner
+from sentinelguard.core.scanner import BaseScanner, ScannerType, RiskLevel, ScanResult, register_scanner
 
 logger = logging.getLogger(__name__)
 
