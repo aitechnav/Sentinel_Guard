@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Any, ClassVar, Dict, List, Optional
 
-from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
+from sentinelguard.core.scanner import BaseScanner, ScannerType, RiskLevel, ScanResult, register_scanner
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ COMPILED_TOXIC = {
 
 
 @register_scanner
-class ToxicityScanner(PromptScanner):
+class ToxicityScanner(BaseScanner):
     """Detects toxic, hateful, or offensive content.
 
     Combines keyword/pattern matching (hate speech, threats, harassment,
@@ -70,6 +70,7 @@ class ToxicityScanner(PromptScanner):
     """
 
     scanner_name: ClassVar[str] = "toxicity"
+    scanner_type: ClassVar[ScannerType] = ScannerType.BOTH
 
     def __init__(
         self,
