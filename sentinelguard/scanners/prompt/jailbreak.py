@@ -19,8 +19,6 @@ import logging
 import re
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
-from transformers import pipeline
-
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
 
 logger = logging.getLogger(__name__)
@@ -179,8 +177,9 @@ class JailbreakScanner(PromptScanner):
     def _load_model(self) -> None:
         if self._model is None:
             try:
+                from transformers import pipeline as hf_pipeline
                 logger.info("Loading jailbreak detection model: %s", _JAILBREAK_MODEL_ID)
-                self._model = pipeline("text-classification", model=_JAILBREAK_MODEL_ID)
+                self._model = hf_pipeline("text-classification", model=_JAILBREAK_MODEL_ID)
             except Exception as exc:
                 logger.warning("Failed to load jailbreak model, falling back to patterns only: %s", exc)
                 self._model = False
