@@ -148,20 +148,44 @@ class SecretsScanner(PromptScanner):
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         found_secrets: Dict[str, int] = {}
+        secret_matches: List[Dict[str, Any]] = []  # position + value info for sanitization
 
         # Method 1: Vendor-specific patterns
         for secret_type, pattern in VENDOR_PATTERNS.items():
             if self.secret_types and secret_type not in self.secret_types:
                 continue
-            if pattern.findall(text):
-                found_secrets[secret_type] = len(pattern.findall(text))
+            for match in pattern.finditer(text):
+                found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
+                secret_matches.append({
+                    "type": secret_type,
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": match.group(0),
+                })
 
         # Method 2: Generic keyword patterns
         for secret_type, pattern in KEYWORD_PATTERNS.items():
             if self.secret_types and secret_type not in self.secret_types:
                 continue
-            if pattern.findall(text):
-                found_secrets[secret_type] = len(pattern.findall(text))
+            for match in pattern.finditer(text):
+                found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
+                # For keyword patterns, the value is in group(1) or group(2)
+                try:
+                    value = match.group(2) if match.lastindex and match.lastindex >= 2 else match.group(1)
+                    val_start = match.start() + match.group(0).index(value)
+                    secret_matches.append({
+                        "type": secret_type,
+                        "start": val_start,
+                        "end": val_start + len(value),
+                        "text": value,
+                    })
+                except (IndexError, ValueError):
+                    secret_matches.append({
+                        "type": secret_type,
+                        "start": match.start(),
+                        "end": match.end(),
+                        "text": match.group(0),
+                    })
 
         # Method 3: High-entropy string detection
         if self.detect_entropy:
@@ -171,6 +195,12 @@ class SecretsScanner(PromptScanner):
                     continue
                 if _shannon_entropy(candidate) > HEX_ENTROPY_THRESHOLD:
                     found_secrets["high_entropy_hex"] = found_secrets.get("high_entropy_hex", 0) + 1
+                    secret_matches.append({
+                        "type": "high_entropy_hex",
+                        "start": match.start(1),
+                        "end": match.end(1),
+                        "text": candidate,
+                    })
 
             for match in _BASE64_CANDIDATE.finditer(text):
                 candidate = match.group(1)
@@ -178,13 +208,19 @@ class SecretsScanner(PromptScanner):
                     continue
                 if len(candidate) >= 20 and _shannon_entropy(candidate) > BASE64_ENTROPY_THRESHOLD:
                     found_secrets["high_entropy_base64"] = found_secrets.get("high_entropy_base64", 0) + 1
+                    secret_matches.append({
+                        "type": "high_entropy_base64",
+                        "start": match.start(1),
+                        "end": match.end(1),
+                        "text": candidate,
+                    })
 
         if not found_secrets:
             return ScanResult(
                 is_valid=True,
                 score=0.0,
                 risk_level=RiskLevel.LOW,
-                details={"secrets_found": {}},
+                details={"secrets_found": {}, "secret_matches": []},
             )
 
         max_score = 0.0
@@ -206,5 +242,6 @@ class SecretsScanner(PromptScanner):
                 "secrets_found": found_secrets,
                 "secret_types": list(found_secrets.keys()),
                 "total_secrets": sum(found_secrets.values()),
+                "secret_matches": secret_matches,
             },
         )
