@@ -11,8 +11,6 @@ import logging
 import re
 from typing import Any, ClassVar, Dict, List, Optional
 
-from transformers import pipeline
-
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
 
 logger = logging.getLogger(__name__)
@@ -86,8 +84,9 @@ class ToxicityScanner(PromptScanner):
     def _load_model(self) -> None:
         if self._model is None:
             try:
+                from transformers import pipeline as hf_pipeline
                 logger.info("Loading toxicity model: %s", _TOXICITY_MODEL_ID)
-                self._model = pipeline("text-classification", model=_TOXICITY_MODEL_ID, top_k=None)
+                self._model = hf_pipeline("text-classification", model=_TOXICITY_MODEL_ID, top_k=None)
             except Exception as exc:
                 logger.warning("Failed to load toxicity model, falling back to patterns: %s", exc)
                 self._model = False
