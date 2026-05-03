@@ -9,12 +9,12 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from presidio_analyzer import AnalyzerEngine
 
-from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
+from sentinelguard.core.scanner import BaseScanner, ScannerType, RiskLevel, ScanResult, register_scanner
 
 
 @register_scanner
-class PIIScanner(PromptScanner):
-    """Detects personally identifiable information in prompts using Presidio.
+class PIIScanner(BaseScanner):
+    """Detects personally identifiable information using Presidio.
 
     Covers 30+ entity types: EMAIL_ADDRESS, PHONE_NUMBER, CREDIT_CARD,
     US_SSN, IBAN_CODE, US_PASSPORT, IP_ADDRESS, PERSON, LOCATION, CRYPTO,
@@ -24,10 +24,11 @@ class PIIScanner(PromptScanner):
         threshold: Confidence threshold (0.0-1.0). Default 0.5.
         entities: List of entity types to detect. ``None`` = all.
         language: Language for Presidio NLP engine. Default "en".
-        score_threshold: Minimum Presidio confidence score. Default 0.5.
+        score_threshold: Minimum Presidio confidence score. Default 0.3.
     """
 
     scanner_name: ClassVar[str] = "pii"
+    scanner_type: ClassVar[ScannerType] = ScannerType.BOTH
 
     # Sensitivity weights per entity type for risk scoring
     ENTITY_SENSITIVITY: Dict[str, float] = {
@@ -45,7 +46,7 @@ class PIIScanner(PromptScanner):
         threshold: float = 0.5,
         entities: Optional[List[str]] = None,
         language: str = "en",
-        score_threshold: float = 0.5,
+        score_threshold: float = 0.3,
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)

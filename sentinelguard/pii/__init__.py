@@ -162,7 +162,10 @@ class PIIAnonymizer:
         if not entities:
             return AnonymizedResult(text=text)
 
-        sorted_entities = sorted(entities, key=lambda e: e.start, reverse=True)
+        # Deduplicate overlapping entities — keep the one with higher score
+        deduped = self._remove_overlaps(entities)
+
+        sorted_entities = sorted(deduped, key=lambda e: e.start, reverse=True)
         result_text = text
         items = []
         mapping = {}
@@ -182,6 +185,25 @@ class PIIAnonymizer:
 
         items.reverse()
         return AnonymizedResult(text=result_text, items=items, mapping=mapping)
+
+    @staticmethod
+    def _remove_overlaps(entities: List[PIIEntity]) -> List[PIIEntity]:
+        """Remove overlapping entities, keeping the one with higher score."""
+        if not entities:
+            return []
+        # Sort by start position, then by score descending
+        sorted_ents = sorted(entities, key=lambda e: (e.start, -e.score))
+        result = [sorted_ents[0]]
+        for ent in sorted_ents[1:]:
+            prev = result[-1]
+            if ent.start >= prev.end:
+                # No overlap
+                result.append(ent)
+            elif ent.score > prev.score:
+                # Overlaps but higher score — replace
+                result[-1] = ent
+            # else: overlaps with lower score — skip
+        return result
 
     def _apply_strategy(self, entity: PIIEntity, strategy: str) -> str:
         if strategy == "replace":
