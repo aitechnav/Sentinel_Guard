@@ -153,9 +153,10 @@ class SecretsScanner(PromptScanner):
             return {}, []
 
         try:
-            from detect_secrets import settings
-            from detect_secrets.core.scan import scan_line
+            from detect_secrets.core.secrets_collection import SecretsCollection
             from detect_secrets.settings import transient_settings
+            import tempfile
+            import os
         except ImportError:
             self._detect_secrets_available = False
             logger.debug("detect-secrets not installed, using built-in patterns")
@@ -165,48 +166,63 @@ class SecretsScanner(PromptScanner):
         found: Dict[str, int] = {}
         matches: List[Dict[str, Any]] = []
 
-        # Scan each line with detect-secrets
-        with transient_settings({"plugins_used": [
-            {"name": "ArtifactoryDetector"},
-            {"name": "AWSKeyDetector"},
-            {"name": "AzureStorageKeyDetector"},
-            {"name": "BasicAuthDetector"},
-            {"name": "CloudantDetector"},
-            {"name": "DiscordBotTokenDetector"},
-            {"name": "GitHubTokenDetector"},
-            {"name": "HexHighEntropyString", "limit": 3.0},
-            {"name": "Base64HighEntropyString", "limit": 4.5},
-            {"name": "IbmCloudIamDetector"},
-            {"name": "IbmCosHmacDetector"},
-            {"name": "JwtTokenDetector"},
-            {"name": "KeywordDetector"},
-            {"name": "MailchimpDetector"},
-            {"name": "NpmDetector"},
-            {"name": "PrivateKeyDetector"},
-            {"name": "SendGridDetector"},
-            {"name": "SlackDetector"},
-            {"name": "SoftlayerDetector"},
-            {"name": "SquareOAuthDetector"},
-            {"name": "StripeDetector"},
-            {"name": "TwilioKeyDetector"},
-        ]}):
-            for line_num, line in enumerate(text.splitlines()):
-                for secret in scan_line(line):
+        # Write text to temp file for full-context scanning
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+        temp_file.write(text.encode("utf-8"))
+        temp_file.close()
+
+        try:
+            secrets = SecretsCollection()
+            with transient_settings({"plugins_used": [
+                {"name": "ArtifactoryDetector"},
+                {"name": "AWSKeyDetector"},
+                {"name": "AzureStorageKeyDetector"},
+                {"name": "BasicAuthDetector"},
+                {"name": "CloudantDetector"},
+                {"name": "DiscordBotTokenDetector"},
+                {"name": "GitHubTokenDetector"},
+                {"name": "IbmCloudIamDetector"},
+                {"name": "IbmCosHmacDetector"},
+                {"name": "JwtTokenDetector"},
+                {"name": "KeywordDetector"},
+                {"name": "MailchimpDetector"},
+                {"name": "NpmDetector"},
+                {"name": "PrivateKeyDetector"},
+                {"name": "SendGridDetector"},
+                {"name": "SlackDetector"},
+                {"name": "SoftlayerDetector"},
+                {"name": "SquareOAuthDetector"},
+                {"name": "StripeDetector"},
+                {"name": "TwilioKeyDetector"},
+                {"name": "Base64HighEntropyString", "limit": 4.5},
+                {"name": "HexHighEntropyString", "limit": 3.0},
+            ]}):
+                secrets.scan_file(str(temp_file.name))
+
+            for file in secrets.files:
+                for secret in secrets[file]:
+                    if secret.secret_value is None:
+                        continue
+                    secret_val = secret.secret_value
+                    if len(secret_val) < 6:
+                        continue
+
                     secret_type = secret.type
                     found[secret_type] = found.get(secret_type, 0) + 1
-                    # Calculate position in original text
-                    line_start = sum(len(l) + 1 for l in text.splitlines()[:line_num])
-                    secret_val = secret.secret_value or ""
+
+                    # Find position in original text
                     try:
-                        val_start = line_start + line.index(secret_val)
+                        val_start = text.index(secret_val)
                     except ValueError:
-                        val_start = line_start
+                        continue
                     matches.append({
                         "type": secret_type,
                         "start": val_start,
                         "end": val_start + len(secret_val),
                         "text": secret_val,
                     })
+        finally:
+            os.remove(temp_file.name)
 
         return found, matches
 
