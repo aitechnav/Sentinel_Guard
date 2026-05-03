@@ -36,7 +36,7 @@ Usage:
     guard = SentinelGuard(config=config)
 """
 
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 __author__ = "SentinelGuard Contributors"
 
 from sentinelguard.core.guard import SentinelGuard
