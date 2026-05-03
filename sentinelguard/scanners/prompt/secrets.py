@@ -1,19 +1,24 @@
 """Secrets detection scanner.
 
-Detects API keys, tokens, passwords, and other credentials in text
-using three detection methods:
-1. Vendor-specific patterns (AWS, GitHub, Stripe, etc.)
-2. Generic keyword + value patterns (any password=, key=, token=, etc.)
-3. High-entropy string detection (catches unknown/custom secrets)
+Detects API keys, tokens, passwords, and other credentials in text.
+
+Detection methods (in order):
+1. detect-secrets library (Yelp) — industry-standard secrets detection with
+   20+ built-in plugins (AWS, GitHub, Stripe, high-entropy, keyword, etc.)
+2. Vendor-specific regex patterns (fallback if detect-secrets unavailable)
+3. Generic keyword + value patterns (password=, key=, token=, etc.)
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from typing import Any, ClassVar, Dict, List, Optional
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
+
+logger = logging.getLogger(__name__)
 
 # ── Vendor-specific patterns ──
 VENDOR_PATTERNS = {
@@ -43,7 +48,7 @@ VENDOR_PATTERNS = {
 # These match: keyword = value, keyword: value, keyword="value", etc.
 KEYWORD_PATTERNS = {
     "generic_password": re.compile(
-        r"(?i)(?:password|passwd|pwd|pass)\s*[:=]\s*['\"]?([^\s'\"]{4,})['\"]?"
+        r"(?i)(?:\w*password|\w*passwd|\w*pwd|\w*pass)\s*[:=]\s*['\"]?([^\s'\"]{4,})['\"]?"
     ),
     "generic_api_key": re.compile(
         r"(?i)(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token|access[_-]?key)\s*[:=]\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
@@ -63,9 +68,6 @@ KEYWORD_PATTERNS = {
     "bearer_header": re.compile(
         r"(?i)(?:bearer|authorization)\s*[:=]?\s*['\"]?([A-Za-z0-9_\-./+=]{20,})['\"]?"
     ),
-    "database_password": re.compile(
-        r"(?i)(?:db[_-]?pass|db[_-]?password|database[_-]?password|mysql[_-]?pwd|pg[_-]?password)\s*[:=]\s*['\"]?([^\s'\"]{4,})['\"]?"
-    ),
     "encryption_key": re.compile(
         r"(?i)(?:encrypt[_-]?key|encryption[_-]?key|aes[_-]?key|signing[_-]?key|hmac[_-]?key)\s*[:=]\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
     ),
@@ -75,7 +77,7 @@ KEYWORD_PATTERNS = {
 HIGH_SENSITIVITY = {
     "aws_access_key", "aws_secret_key", "private_key",
     "connection_string", "stripe_key", "azure_key",
-    "generic_password", "generic_secret", "database_password",
+    "generic_password", "generic_secret",
     "encryption_key",
 }
 MEDIUM_SENSITIVITY = {
@@ -122,10 +124,8 @@ _ENTROPY_EXCLUDE = re.compile(
 class SecretsScanner(PromptScanner):
     """Detects API keys, tokens, passwords, and credentials.
 
-    Uses three detection methods:
-    1. Vendor-specific patterns (AWS, GitHub, Stripe, etc.)
-    2. Generic keyword patterns (password=, key=, token=, etc.)
-    3. High-entropy string detection (catches unknown secrets)
+    Primary detection via detect-secrets (Yelp) with 20+ plugins.
+    Falls back to built-in regex patterns if detect-secrets is unavailable.
 
     Args:
         threshold: Score threshold (0.0-1.0). Default 0.5.
@@ -145,46 +145,125 @@ class SecretsScanner(PromptScanner):
         super().__init__(threshold=threshold, **kwargs)
         self.secret_types = secret_types
         self.detect_entropy = detect_entropy
+        self._detect_secrets_available = None
+
+    def _try_detect_secrets(self, text: str) -> tuple[Dict[str, int], List[Dict[str, Any]]]:
+        """Use detect-secrets library for primary detection."""
+        if self._detect_secrets_available is False:
+            return {}, []
+
+        try:
+            from detect_secrets import settings
+            from detect_secrets.core.scan import scan_line
+            from detect_secrets.settings import transient_settings
+        except ImportError:
+            self._detect_secrets_available = False
+            logger.debug("detect-secrets not installed, using built-in patterns")
+            return {}, []
+
+        self._detect_secrets_available = True
+        found: Dict[str, int] = {}
+        matches: List[Dict[str, Any]] = []
+
+        # Scan each line with detect-secrets
+        with transient_settings({"plugins_used": [
+            {"name": "ArtifactoryDetector"},
+            {"name": "AWSKeyDetector"},
+            {"name": "AzureStorageKeyDetector"},
+            {"name": "BasicAuthDetector"},
+            {"name": "CloudantDetector"},
+            {"name": "DiscordBotTokenDetector"},
+            {"name": "GitHubTokenDetector"},
+            {"name": "HexHighEntropyString", "limit": 3.0},
+            {"name": "Base64HighEntropyString", "limit": 4.5},
+            {"name": "IbmCloudIamDetector"},
+            {"name": "IbmCosHmacDetector"},
+            {"name": "JwtTokenDetector"},
+            {"name": "KeywordDetector"},
+            {"name": "MailchimpDetector"},
+            {"name": "NpmDetector"},
+            {"name": "PrivateKeyDetector"},
+            {"name": "SendGridDetector"},
+            {"name": "SlackDetector"},
+            {"name": "SoftlayerDetector"},
+            {"name": "SquareOAuthDetector"},
+            {"name": "StripeDetector"},
+            {"name": "TwilioKeyDetector"},
+        ]}):
+            for line_num, line in enumerate(text.splitlines()):
+                for secret in scan_line(line):
+                    secret_type = secret.type
+                    found[secret_type] = found.get(secret_type, 0) + 1
+                    # Calculate position in original text
+                    line_start = sum(len(l) + 1 for l in text.splitlines()[:line_num])
+                    secret_val = secret.secret_value or ""
+                    try:
+                        val_start = line_start + line.index(secret_val)
+                    except ValueError:
+                        val_start = line_start
+                    matches.append({
+                        "type": secret_type,
+                        "start": val_start,
+                        "end": val_start + len(secret_val),
+                        "text": secret_val,
+                    })
+
+        return found, matches
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         found_secrets: Dict[str, int] = {}
-        secret_matches: List[Dict[str, Any]] = []  # position + value info for sanitization
+        secret_matches: List[Dict[str, Any]] = []
 
-        # Method 1: Vendor-specific patterns
+        # Method 1: detect-secrets library (primary)
+        ds_found, ds_matches = self._try_detect_secrets(text)
+        found_secrets.update(ds_found)
+        secret_matches.extend(ds_matches)
+
+        # Method 2: Built-in vendor-specific patterns (supplement detect-secrets)
         for secret_type, pattern in VENDOR_PATTERNS.items():
             if self.secret_types and secret_type not in self.secret_types:
                 continue
             for match in pattern.finditer(text):
-                found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
-                secret_matches.append({
-                    "type": secret_type,
-                    "start": match.start(),
-                    "end": match.end(),
-                    "text": match.group(0),
-                })
-
-        # Method 2: Generic keyword patterns
-        for secret_type, pattern in KEYWORD_PATTERNS.items():
-            if self.secret_types and secret_type not in self.secret_types:
-                continue
-            for match in pattern.finditer(text):
-                found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
-                # For keyword patterns, the value is in group(1) or group(2)
-                try:
-                    value = match.group(2) if match.lastindex and match.lastindex >= 2 else match.group(1)
-                    val_start = match.start() + match.group(0).index(value)
-                    secret_matches.append({
-                        "type": secret_type,
-                        "start": val_start,
-                        "end": val_start + len(value),
-                        "text": value,
-                    })
-                except (IndexError, ValueError):
+                # Avoid duplicates with detect-secrets findings
+                match_text = match.group(0)
+                already_found = any(
+                    m["text"] == match_text or
+                    (m["start"] <= match.start() < m["end"])
+                    for m in secret_matches
+                )
+                if not already_found:
+                    found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
                     secret_matches.append({
                         "type": secret_type,
                         "start": match.start(),
                         "end": match.end(),
                         "text": match.group(0),
+                    })
+
+        # Method 3: Generic keyword patterns (supplement)
+        for secret_type, pattern in KEYWORD_PATTERNS.items():
+            if self.secret_types and secret_type not in self.secret_types:
+                continue
+            for match in pattern.finditer(text):
+                try:
+                    value = match.group(2) if match.lastindex and match.lastindex >= 2 else match.group(1)
+                    val_start = match.start() + match.group(0).index(value)
+                except (IndexError, ValueError):
+                    value = match.group(0)
+                    val_start = match.start()
+                # Avoid duplicates
+                already_found = any(
+                    m["text"] == value or
+                    (m["start"] <= val_start < m["end"])
+                    for m in secret_matches
+                )
+                if not already_found:
+                    found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
+                    secret_matches.append({
+                        "type": secret_type,
+                        "start": val_start,
+                        "end": val_start + len(value),
+                        "text": value,
                     })
 
         # Method 3: High-entropy string detection
