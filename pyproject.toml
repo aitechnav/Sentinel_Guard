@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinelguard"
-version = "0.0.4"
+version = "0.0.5"
 description = "A comprehensive, production-ready LLM security and guardrails framework"
 readme = "README.md"
 license = {text = "MIT"}
