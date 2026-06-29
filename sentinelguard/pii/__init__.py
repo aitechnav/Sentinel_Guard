@@ -20,12 +20,20 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from presidio_analyzer import AnalyzerEngine
-
 logger = logging.getLogger(__name__)
+
+FALLBACK_PATTERNS = {
+    "EMAIL_ADDRESS": (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), 0.85),
+    "PHONE_NUMBER": (re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"), 0.75),
+    "CREDIT_CARD": (re.compile(r"\b(?:\d[ -]*?){13,19}\b"), 0.95),
+    "US_SSN": (re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b"), 0.95),
+    "IP_ADDRESS": (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), 0.6),
+    "PERSON": (re.compile(r"\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b"), 0.55),
+}
 
 
 @dataclass
@@ -84,8 +92,15 @@ class PIIDetector:
         self.language = language
         self.entities = entities
         self.score_threshold = score_threshold
-        self._analyzer = AnalyzerEngine()
-        logger.info("Presidio AnalyzerEngine initialized")
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            self._analyzer = AnalyzerEngine()
+            self._method = "presidio"
+            logger.info("Presidio AnalyzerEngine initialized")
+        except Exception as exc:
+            self._analyzer = None
+            self._method = "regex_fallback"
+            logger.debug("Presidio unavailable, using regex fallback: %s", exc)
 
     def detect(self, text: str) -> List[PIIEntity]:
         """Detect PII entities in text using Presidio.
@@ -96,12 +111,19 @@ class PIIDetector:
         Returns:
             List of detected PIIEntity objects sorted by position.
         """
-        results = self._analyzer.analyze(
-            text=text,
-            entities=self.entities,
-            language=self.language,
-            score_threshold=self.score_threshold,
-        )
+        if self._analyzer is None:
+            return self._detect_with_regex(text)
+
+        try:
+            results = self._analyzer.analyze(
+                text=text,
+                entities=self.entities,
+                language=self.language,
+                score_threshold=self.score_threshold,
+            )
+        except Exception as exc:
+            logger.debug("Presidio analysis failed, using regex fallback: %s", exc)
+            return self._detect_with_regex(text)
         return [
             PIIEntity(
                 entity_type=r.entity_type,
@@ -112,6 +134,41 @@ class PIIDetector:
             )
             for r in sorted(results, key=lambda r: r.start)
         ]
+
+    def _detect_with_regex(self, text: str) -> List[PIIEntity]:
+        allowed = set(self.entities) if self.entities else None
+        entities: List[PIIEntity] = []
+
+        for entity_type, (pattern, score) in FALLBACK_PATTERNS.items():
+            if allowed is not None and entity_type not in allowed:
+                continue
+            if score < self.score_threshold:
+                continue
+            for match in pattern.finditer(text):
+                entities.append(
+                    PIIEntity(
+                        entity_type=entity_type,
+                        start=match.start(),
+                        end=match.end(),
+                        score=score,
+                        text=match.group(0),
+                    )
+                )
+
+        return self._remove_overlaps(sorted(entities, key=lambda e: (e.start, -e.score)))
+
+    @staticmethod
+    def _remove_overlaps(entities: List[PIIEntity]) -> List[PIIEntity]:
+        if not entities:
+            return []
+        result = [entities[0]]
+        for entity in entities[1:]:
+            previous = result[-1]
+            if entity.start >= previous.end:
+                result.append(entity)
+            elif entity.score > previous.score:
+                result[-1] = entity
+        return result
 
     def detect_batch(self, texts: List[str]) -> List[List[PIIEntity]]:
         """Detect PII in multiple texts.

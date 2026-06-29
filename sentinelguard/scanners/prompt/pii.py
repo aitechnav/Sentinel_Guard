@@ -5,11 +5,19 @@ Uses Microsoft Presidio for enterprise-grade detection with 30+ entity types.
 
 from __future__ import annotations
 
+import re
 from typing import Any, ClassVar, Dict, List, Optional
 
-from presidio_analyzer import AnalyzerEngine
-
 from sentinelguard.core.scanner import BaseScanner, ScannerType, RiskLevel, ScanResult, register_scanner
+
+
+FALLBACK_PII_PATTERNS = {
+    "EMAIL_ADDRESS": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    "PHONE_NUMBER": re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
+    "US_SSN": re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b"),
+    "CREDIT_CARD": re.compile(r"\b(?:\d[ -]*?){13,19}\b"),
+    "IP_ADDRESS": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+}
 
 
 @register_scanner
@@ -53,15 +61,37 @@ class PIIScanner(BaseScanner):
         self.entities = entities
         self.language = language
         self.score_threshold = score_threshold
-        self._analyzer = AnalyzerEngine()
+        self._analyzer = None
+        self._presidio_available: Optional[bool] = None
+
+    def _get_analyzer(self):
+        if self._presidio_available is False:
+            return None
+        if self._analyzer is not None:
+            return self._analyzer
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            self._analyzer = AnalyzerEngine()
+            self._presidio_available = True
+            return self._analyzer
+        except Exception:
+            self._presidio_available = False
+            return None
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
-        results = self._analyzer.analyze(
-            text=text,
-            entities=self.entities,
-            language=self.language,
-            score_threshold=self.score_threshold,
-        )
+        analyzer = self._get_analyzer()
+        if analyzer is None:
+            return self._fallback_scan(text)
+
+        try:
+            results = analyzer.analyze(
+                text=text,
+                entities=self.entities,
+                language=self.language,
+                score_threshold=self.score_threshold,
+            )
+        except Exception:
+            return self._fallback_scan(text)
 
         if not results:
             return ScanResult(
@@ -90,6 +120,46 @@ class PIIScanner(BaseScanner):
                 "entities_found": entities_found,
                 "entity_types": list(entities_found.keys()),
                 "total_entities": len(results),
+                "method": "presidio",
+            },
+        )
+
+    def _fallback_scan(self, text: str) -> ScanResult:
+        entities_found: Dict[str, int] = {}
+        allowed = set(self.entities) if self.entities else None
+        max_score = 0.0
+
+        for entity_type, pattern in FALLBACK_PII_PATTERNS.items():
+            if allowed is not None and entity_type not in allowed:
+                continue
+            matches = pattern.findall(text)
+            if not matches:
+                continue
+            entities_found[entity_type] = len(matches)
+            max_score = max(max_score, self.ENTITY_SENSITIVITY.get(entity_type, 0.5))
+
+        if not entities_found:
+            return ScanResult(
+                is_valid=True,
+                score=0.0,
+                risk_level=RiskLevel.LOW,
+                details={
+                    "entities_found": {},
+                    "total_entities": 0,
+                    "method": "regex_fallback",
+                },
+            )
+
+        is_valid = max_score < self.threshold
+        return ScanResult(
+            is_valid=is_valid,
+            score=max_score,
+            risk_level=self._score_to_risk(max_score),
+            details={
+                "entities_found": entities_found,
+                "entity_types": list(entities_found.keys()),
+                "total_entities": sum(entities_found.values()),
+                "method": "regex_fallback",
             },
         )
 

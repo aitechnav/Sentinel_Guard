@@ -150,18 +150,55 @@ class GuardConfig:
             yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
 
     @classmethod
+    def preset_empty(cls) -> GuardConfig:
+        """Empty configuration with no active scanners."""
+        return cls(
+            mode=GuardMode.STANDARD,
+            prompt_scanners={},
+            output_scanners={},
+        )
+
+    @classmethod
     def preset_minimal(cls) -> GuardConfig:
         """Minimal configuration with only essential scanners."""
         return cls(
             mode=GuardMode.STANDARD,
             prompt_scanners={
-                "prompt_injection": ScannerConfig(enabled=True, threshold=0.7),
+                "prompt_injection": ScannerConfig(enabled=True, threshold=0.5),
+                "jailbreak": ScannerConfig(enabled=True, threshold=0.4),
                 "pii": ScannerConfig(enabled=True, threshold=0.5),
-                "toxicity": ScannerConfig(enabled=True, threshold=0.7),
+                "secrets": ScannerConfig(enabled=True, threshold=0.5),
             },
             output_scanners={
+                "data_leakage": ScannerConfig(enabled=True, threshold=0.5),
                 "pii": ScannerConfig(enabled=True, threshold=0.5),
-                "toxicity": ScannerConfig(enabled=True, threshold=0.7),
+                "secrets": ScannerConfig(enabled=True, threshold=0.5),
+                "system_prompt_leakage": ScannerConfig(enabled=True, threshold=0.4),
+            },
+        )
+
+    @classmethod
+    def preset_standard(cls) -> GuardConfig:
+        """Default production-oriented configuration for chatbot safety."""
+        return cls(
+            mode=GuardMode.STANDARD,
+            prompt_scanners={
+                "prompt_injection": ScannerConfig(enabled=True, threshold=0.5),
+                "jailbreak": ScannerConfig(enabled=True, threshold=0.4),
+                "pii": ScannerConfig(enabled=True, threshold=0.5),
+                "secrets": ScannerConfig(enabled=True, threshold=0.5),
+                "invisible_text": ScannerConfig(enabled=True, threshold=0.1),
+                "unbounded_consumption": ScannerConfig(enabled=True, threshold=0.5),
+                "token_limit": ScannerConfig(enabled=True, params={"max_tokens": 4096}),
+            },
+            output_scanners={
+                "data_leakage": ScannerConfig(enabled=True, threshold=0.5),
+                "pii": ScannerConfig(enabled=True, threshold=0.5),
+                "secrets": ScannerConfig(enabled=True, threshold=0.5),
+                "sensitive": ScannerConfig(enabled=True, threshold=0.5),
+                "system_prompt_leakage": ScannerConfig(enabled=True, threshold=0.4),
+                "output_sanitization": ScannerConfig(enabled=True, threshold=0.3),
+                "malicious_urls": ScannerConfig(enabled=True, threshold=0.5),
             },
         )
 
@@ -173,22 +210,36 @@ class GuardConfig:
             fail_fast=True,
             prompt_scanners={
                 "prompt_injection": ScannerConfig(enabled=True, threshold=0.5),
+                "jailbreak": ScannerConfig(enabled=True, threshold=0.3),
+                "invisible_text": ScannerConfig(enabled=True, threshold=0.1),
+                "ban_code": ScannerConfig(enabled=True, threshold=0.3),
                 "pii": ScannerConfig(enabled=True, threshold=0.3),
                 "secrets": ScannerConfig(enabled=True, threshold=0.3),
                 "toxicity": ScannerConfig(enabled=True, threshold=0.5),
+                "supply_chain": ScannerConfig(enabled=True, threshold=0.4),
+                "data_poisoning": ScannerConfig(enabled=True, threshold=0.4),
+                "unbounded_consumption": ScannerConfig(enabled=True, threshold=0.5),
                 "gibberish": ScannerConfig(enabled=True, threshold=0.7),
-                "invisible_text": ScannerConfig(enabled=True, threshold=0.1),
                 "code": ScannerConfig(enabled=True, threshold=0.5),
                 "ban_topics": ScannerConfig(enabled=True, threshold=0.5),
                 "token_limit": ScannerConfig(enabled=True, params={"max_tokens": 4096}),
             },
             output_scanners={
+                "data_leakage": ScannerConfig(enabled=True, threshold=0.4),
                 "pii": ScannerConfig(enabled=True, threshold=0.3),
+                "secrets": ScannerConfig(enabled=True, threshold=0.3),
                 "toxicity": ScannerConfig(enabled=True, threshold=0.5),
                 "bias": ScannerConfig(enabled=True, threshold=0.5),
                 "relevance": ScannerConfig(enabled=True, threshold=0.3),
                 "malicious_urls": ScannerConfig(enabled=True, threshold=0.5),
                 "sensitive": ScannerConfig(enabled=True, threshold=0.5),
+                "output_sanitization": ScannerConfig(enabled=True, threshold=0.3),
+                "json": ScannerConfig(enabled=True, threshold=0.5),
+                "excessive_agency": ScannerConfig(enabled=True, threshold=0.4),
+                "system_prompt_leakage": ScannerConfig(enabled=True, threshold=0.4),
+                "vector_weakness": ScannerConfig(enabled=True, threshold=0.4),
+                "misinformation": ScannerConfig(enabled=True, threshold=0.5),
+                "factual_consistency": ScannerConfig(enabled=True, threshold=0.5),
             },
         )
 

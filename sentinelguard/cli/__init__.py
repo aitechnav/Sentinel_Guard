@@ -112,6 +112,8 @@ def _handle_scan(args: argparse.Namespace) -> int:
         config = GuardConfig.from_yaml(args.config)
 
     guard = SentinelGuard(config=config)
+    if args.threshold is not None:
+        _apply_threshold(guard, args.threshold)
 
     if args.type == "prompt":
         result = guard.scan_prompt(args.text)
@@ -166,6 +168,14 @@ def _handle_scan(args: argparse.Namespace) -> int:
     return 0 if result.is_valid else 1
 
 
+def _apply_threshold(guard, threshold: float) -> None:
+    """Apply a threshold override to all active scanners for this CLI run."""
+    for scanner in guard._prompt_pipeline.scanners:
+        scanner.threshold = threshold
+    for scanner in guard._output_pipeline.scanners:
+        scanner.threshold = threshold
+
+
 def _handle_serve(args: argparse.Namespace) -> int:
     """Handle the serve command."""
     try:
@@ -200,7 +210,7 @@ def _handle_config(args: argparse.Namespace) -> int:
     from sentinelguard.core.config import GuardConfig
 
     if args.config_action == "show":
-        config = GuardConfig()
+        config = GuardConfig.preset_standard()
         print(json.dumps(config.to_dict(), indent=2))
     elif args.config_action == "init":
         if args.preset == "minimal":
@@ -208,7 +218,7 @@ def _handle_config(args: argparse.Namespace) -> int:
         elif args.preset == "strict":
             config = GuardConfig.preset_strict()
         else:
-            config = GuardConfig()
+            config = GuardConfig.preset_standard()
 
         config.save_yaml(args.output)
         print(f"Configuration saved to {args.output}")

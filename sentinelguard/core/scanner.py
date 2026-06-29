@@ -74,6 +74,9 @@ class AggregatedResult:
     is_valid: bool
     results: List[ScanResult] = field(default_factory=list)
     failed_scanners: List[str] = field(default_factory=list)
+    warning_scanners: List[str] = field(default_factory=list)
+    scanner_actions: Dict[str, str] = field(default_factory=dict)
+    sanitized_output: Optional[str] = None
     total_latency_ms: float = 0.0
 
     @property
