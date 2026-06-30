@@ -83,7 +83,28 @@ sentinelguard scanners list
 
 # Start API server
 sentinelguard serve --port 8000
+
+# Start OpenAI-compatible LLM gateway
+export OPENAI_API_KEY="sk-..."
+sentinelguard gateway --provider openai --port 8080
+
+# Or use a native provider adapter
+export ANTHROPIC_API_KEY="sk-ant-..."
+sentinelguard gateway --provider anthropic --port 8080
+
+export GEMINI_API_KEY="..."
+sentinelguard gateway --provider gemini --port 8080
 ```
+
+Point OpenAI-compatible apps or IDEs to:
+
+```text
+http://localhost:8080/v1
+```
+
+The gateway protects traffic only when the app or IDE sends model requests
+through that URL.
+Requests with `stream=true` are supported with safe buffered streaming.
 
 ## 7. YAML Configuration
 

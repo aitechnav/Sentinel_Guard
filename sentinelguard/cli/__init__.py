@@ -7,6 +7,9 @@ Usage:
     sentinelguard scan prompt "Your text here"
     sentinelguard scan output "LLM output here"
     sentinelguard serve --port 8000
+    sentinelguard gateway --provider openai --port 8080
+    sentinelguard gateway --provider anthropic --port 8080
+    sentinelguard gateway --provider gemini --port 8080
     sentinelguard config show
     sentinelguard scanners list
 """
@@ -62,6 +65,43 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--reload", action="store_true", help="Enable auto-reload"
     )
 
+    # ── gateway command ──
+    gateway_parser = subparsers.add_parser(
+        "gateway", help="Start OpenAI-compatible LLM gateway"
+    )
+    gateway_parser.add_argument(
+        "--host", default="0.0.0.0", help="Host to bind to"
+    )
+    gateway_parser.add_argument(
+        "--port", type=int, default=8080, help="Port to listen on"
+    )
+    gateway_parser.add_argument(
+        "--config", type=str, help="Path to SentinelGuard scanner config YAML"
+    )
+    gateway_parser.add_argument(
+        "--gateway-config", type=str, help="Path to gateway config YAML"
+    )
+    gateway_parser.add_argument(
+        "--provider",
+        default=None,
+        help="Gateway provider: openai, anthropic, gemini, or OpenAI-compatible",
+    )
+    gateway_parser.add_argument(
+        "--upstream-url", default=None, help="OpenAI-compatible upstream base URL"
+    )
+    gateway_parser.add_argument(
+        "--api-key-env", default=None, help="Environment variable for upstream API key"
+    )
+    gateway_parser.add_argument(
+        "--enabled", choices=["true", "false"], default=None, help="Enable scanning"
+    )
+    gateway_parser.add_argument(
+        "--sanitize", choices=["true", "false"], default=None, help="Forward sanitized text"
+    )
+    gateway_parser.add_argument(
+        "--reload", action="store_true", help="Enable auto-reload"
+    )
+
     # ── config command ──
     config_parser = subparsers.add_parser("config", help="Manage configuration")
     config_sub = config_parser.add_subparsers(dest="config_action")
@@ -94,6 +134,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_scan(args)
     elif args.command == "serve":
         return _handle_serve(args)
+    elif args.command == "gateway":
+        return _handle_gateway(args)
     elif args.command == "config":
         return _handle_config(args)
     elif args.command == "scanners":
@@ -203,6 +245,67 @@ def _handle_serve(args: argparse.Namespace) -> int:
         reload=args.reload,
     )
     return 0
+
+
+def _handle_gateway(args: argparse.Namespace) -> int:
+    """Handle the gateway command."""
+    try:
+        import uvicorn
+    except ImportError:
+        print("Error: uvicorn is required. Install with: pip install sentinelguard[gateway]")
+        return 1
+
+    from sentinelguard.core.config import GuardConfig
+    from sentinelguard.gateway.config import GatewayConfig
+    from sentinelguard.gateway.providers import (
+        effective_api_key_env,
+        effective_provider,
+        effective_upstream_url,
+    )
+    from sentinelguard.gateway.server import create_gateway_app
+
+    guard_config = GuardConfig.from_yaml(args.config) if args.config else None
+    gateway_config = (
+        GatewayConfig.from_yaml(args.gateway_config)
+        if args.gateway_config
+        else GatewayConfig()
+    )
+
+    if args.provider is not None:
+        gateway_config.provider = args.provider
+    if args.upstream_url is not None:
+        gateway_config.upstream_url = args.upstream_url
+    if args.api_key_env is not None:
+        gateway_config.api_key_env = args.api_key_env
+    if args.enabled is not None:
+        gateway_config.enabled = _parse_bool(args.enabled)
+    if args.sanitize is not None:
+        gateway_config.sanitize = _parse_bool(args.sanitize)
+
+    app = create_gateway_app(
+        guard_config=guard_config,
+        gateway_config=gateway_config,
+    )
+
+    mode = "enabled" if gateway_config.enabled else "pass-through"
+    print(f"Starting SentinelGuard LLM gateway on {args.host}:{args.port}")
+    print(f"Gateway mode: {mode}")
+    print(f"Provider: {effective_provider(gateway_config)}")
+    print(f"Upstream: {effective_upstream_url(gateway_config)}")
+    print(f"API key env: {effective_api_key_env(gateway_config)}")
+    print(f"Streaming mode: {gateway_config.streaming_mode}")
+
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+    return 0
+
+
+def _parse_bool(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes", "on"}
 
 
 def _handle_config(args: argparse.Namespace) -> int:
