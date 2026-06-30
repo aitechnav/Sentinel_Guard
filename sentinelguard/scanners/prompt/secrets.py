@@ -16,7 +16,7 @@ import math
 import re
 from typing import Any, ClassVar, Dict, List, Optional
 
-from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
+from sentinelguard.core.scanner import BaseScanner, ScannerType, RiskLevel, ScanResult, register_scanner
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ VENDOR_PATTERNS = {
     "aws_secret_key": re.compile(r"(?<![A-Za-z0-9/+=])[0-9a-zA-Z/+=]{40}(?![A-Za-z0-9/+=])"),
     "github_token": re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,255}"),
     "github_fine_grained": re.compile(r"github_pat_[A-Za-z0-9_]{22,255}"),
-    "openai_api_key": re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    "openai_api_key": re.compile(r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}"),
     "anthropic_api_key": re.compile(r"sk-ant-[A-Za-z0-9\-_]{20,}"),
     "slack_token": re.compile(r"xox[boaprs]-[0-9A-Za-z\-]{10,250}"),
     "slack_webhook": re.compile(
@@ -48,19 +48,19 @@ VENDOR_PATTERNS = {
 # These match: keyword = value, keyword: value, keyword="value", etc.
 KEYWORD_PATTERNS = {
     "generic_password": re.compile(
-        r"(?i)(?:\w*password|\w*passwd|\w*pwd|\w*pass)\s*[:=]\s*['\"]?([^\s'\"]{4,})['\"]?"
+        r"(?i)(?:\w*password|\w*passwd|\w*pwd|\w*pass)\s*(?:is|:|=)\s*['\"]?([^\s'\"]{4,})['\"]?"
     ),
     "generic_api_key": re.compile(
-        r"(?i)(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token|access[_-]?key)\s*[:=]\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
+        r"(?i)(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token|access[_-]?key)\s*(?:is|:|=)\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
     ),
     "generic_secret": re.compile(
-        r"(?i)(?:secret[_-]?key|client[_-]?secret|app[_-]?secret|private[_-]?key)\s*[:=]\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
+        r"(?i)(?:secret[_-]?key|client[_-]?secret|app[_-]?secret|private[_-]?key)\s*(?:is|:|=)\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
     ),
     "generic_token": re.compile(
-        r"(?i)(?:token|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|session[_-]?token)\s*[:=]\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
+        r"(?i)(?:token|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|session[_-]?token)\s*(?:is|:|=)\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
     ),
     "generic_credential": re.compile(
-        r"(?i)(?:credential|auth|authorization|secret)\s*[:=]\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
+        r"(?i)(?:credential|auth|authorization|secret)\s*(?:is|:|=)\s*['\"]?([A-Za-z0-9_\-./+=]{8,})['\"]?"
     ),
     "generic_username": re.compile(
         r"(?i)(?:username|user[_-]?name|user[_-]?id|login)\s*[:=]\s*['\"]?([^\s'\"]{3,})['\"]?"
@@ -120,8 +120,23 @@ _ENTROPY_EXCLUDE = re.compile(
 )
 
 
+def _redact_value(value: str) -> str:
+    """Return a non-sensitive preview suitable for scan details."""
+    if len(value) <= 8:
+        return "<redacted>"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _sanitize_text(text: str, matches: List[Dict[str, Any]]) -> str:
+    sanitized = text
+    for match in sorted(matches, key=lambda m: m["start"], reverse=True):
+        replacement = f"<SECRET:{match['type']}>"
+        sanitized = sanitized[:match["start"]] + replacement + sanitized[match["end"]:]
+    return sanitized
+
+
 @register_scanner
-class SecretsScanner(PromptScanner):
+class SecretsScanner(BaseScanner):
     """Detects API keys, tokens, passwords, and credentials.
 
     Primary detection via detect-secrets (Yelp) with 20+ plugins.
@@ -134,17 +149,20 @@ class SecretsScanner(PromptScanner):
     """
 
     scanner_name: ClassVar[str] = "secrets"
+    scanner_type: ClassVar[ScannerType] = ScannerType.BOTH
 
     def __init__(
         self,
         threshold: float = 0.5,
         secret_types: Optional[List[str]] = None,
         detect_entropy: bool = True,
+        redact_details: bool = True,
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
         self.secret_types = secret_types
         self.detect_entropy = detect_entropy
+        self.redact_details = redact_details
         self._detect_secrets_available = None
 
     def _try_detect_secrets(self, text: str) -> tuple[Dict[str, int], List[Dict[str, Any]]]:
@@ -329,14 +347,23 @@ class SecretsScanner(PromptScanner):
 
         is_valid = max_score < self.threshold
 
+        public_matches = [
+            {
+                **match,
+                "text": _redact_value(match["text"]) if self.redact_details else match["text"],
+            }
+            for match in secret_matches
+        ]
+
         return ScanResult(
             is_valid=is_valid,
             score=max_score,
             risk_level=RiskLevel.CRITICAL if max_score >= 0.8 else RiskLevel.HIGH,
+            sanitized_output=_sanitize_text(text, secret_matches),
             details={
                 "secrets_found": found_secrets,
                 "secret_types": list(found_secrets.keys()),
                 "total_secrets": sum(found_secrets.values()),
-                "secret_matches": secret_matches,
+                "secret_matches": public_matches,
             },
         )

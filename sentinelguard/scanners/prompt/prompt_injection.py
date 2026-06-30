@@ -113,9 +113,10 @@ class PromptInjectionScanner(PromptScanner):
 
         # If model unavailable, rebalance weights to pattern+heuristic only
         if self._model:
-            final_score = pattern_score * 0.3 + heuristic_score * 0.2 + model_score * 0.5
+            weighted_score = pattern_score * 0.3 + heuristic_score * 0.2 + model_score * 0.5
         else:
-            final_score = pattern_score * 0.6 + heuristic_score * 0.4
+            weighted_score = pattern_score * 0.6 + heuristic_score * 0.4
+        final_score = max(pattern_score, heuristic_score, weighted_score)
 
         is_valid = final_score < self.threshold
 

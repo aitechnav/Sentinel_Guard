@@ -62,6 +62,7 @@ class AnonymizeScanner(PromptScanner):
             entity_strategies=entity_strategies or {},
         )
         self._last_mapping: Dict[str, str] = {}
+        self._method = getattr(self._detector, "_method", "presidio")
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         detected = self._detector.detect(text)
@@ -71,7 +72,11 @@ class AnonymizeScanner(PromptScanner):
                 is_valid=True,
                 score=0.0,
                 risk_level=RiskLevel.LOW,
-                details={"entities_found": {}, "strategy": self.strategy, "method": "presidio"},
+                details={
+                    "entities_found": {},
+                    "strategy": self.strategy,
+                    "method": self._method,
+                },
             )
 
         anonymized = self._anonymizer.anonymize(text, detected)
@@ -94,7 +99,7 @@ class AnonymizeScanner(PromptScanner):
                 "entity_types": list(entity_counts.keys()),
                 "total_entities": len(detected),
                 "strategy": self.strategy,
-                "method": "presidio",
+                "method": self._method,
                 "mapping_available": bool(self._last_mapping),
             },
         )

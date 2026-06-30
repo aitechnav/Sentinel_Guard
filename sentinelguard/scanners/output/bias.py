@@ -122,11 +122,15 @@ class BiasScanner(OutputScanner):
         self._load_model()
         model_score = self._model_scan(text) if self._model else 0.0
 
-        regex_weight = 1.0 - self.model_weight
-        final_score = regex_score * regex_weight + model_score * self.model_weight
-        # Confidence boost: when both methods agree it's biased
-        if regex_score > 0.3 and model_score > 0.5:
-            final_score = min(1.0, final_score * 1.1)
+        if self._model:
+            regex_weight = 1.0 - self.model_weight
+            weighted_score = regex_score * regex_weight + model_score * self.model_weight
+            final_score = max(regex_score, model_score, weighted_score)
+            # Confidence boost: when both methods agree it's biased
+            if regex_score > 0.3 and model_score > 0.5:
+                final_score = min(1.0, final_score * 1.1)
+        else:
+            final_score = regex_score
 
         is_valid = final_score < self.threshold
 

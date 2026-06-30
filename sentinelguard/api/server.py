@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import copy
 from typing import Any, Dict, List, Optional
 
 from sentinelguard.core.config import GuardConfig
@@ -102,6 +103,35 @@ def create_app(config: Optional[GuardConfig] = None) -> Any:
         fail_fast: Optional[bool] = None
         parallel: Optional[bool] = None
 
+    def _guard_for_request(request: ScanRequest, direction: str) -> SentinelGuard:
+        if request.scanners is None and request.threshold is None:
+            return guard
+
+        request_guard = SentinelGuard(config=copy.deepcopy(guard.config))
+        if request.threshold is not None:
+            for scanner in request_guard._prompt_pipeline.scanners:
+                scanner.threshold = request.threshold
+            for scanner in request_guard._output_pipeline.scanners:
+                scanner.threshold = request.threshold
+
+        if request.scanners is not None:
+            allowed = set(request.scanners)
+            pipeline = (
+                request_guard._prompt_pipeline
+                if direction == "prompt"
+                else request_guard._output_pipeline
+            )
+            pipeline.scanners = [
+                scanner for scanner in pipeline.scanners if scanner.scanner_name in allowed
+            ]
+            pipeline.scanner_actions = {
+                name: action
+                for name, action in pipeline.scanner_actions.items()
+                if name in allowed
+            }
+
+        return request_guard
+
     # ── Endpoints ──
 
     @app.get("/health", response_model=HealthResponse)
@@ -118,7 +148,8 @@ def create_app(config: Optional[GuardConfig] = None) -> Any:
     async def scan_prompt(request: ScanRequest):
         """Scan a prompt for security issues."""
         try:
-            result = guard.scan_prompt(request.text)
+            request_guard = _guard_for_request(request, "prompt")
+            result = request_guard.scan_prompt(request.text)
             return ScanResponse(
                 is_valid=result.is_valid,
                 results=[
@@ -144,7 +175,8 @@ def create_app(config: Optional[GuardConfig] = None) -> Any:
     async def scan_output(request: ScanRequest):
         """Scan an LLM output for security issues."""
         try:
-            result = guard.scan_output(request.text)
+            request_guard = _guard_for_request(request, "output")
+            result = request_guard.scan_output(request.text)
             return ScanResponse(
                 is_valid=result.is_valid,
                 results=[

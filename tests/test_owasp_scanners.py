@@ -461,7 +461,7 @@ class TestOWASPComplianceChecker:
         from sentinelguard import SentinelGuard
         from sentinelguard.owasp import OWASPComplianceChecker
 
-        guard = SentinelGuard()
+        guard = SentinelGuard.empty()
         # Add all OWASP-relevant scanners
         guard.use("prompt_injection", on="prompt")
         guard.use("invisible_text", on="prompt")
@@ -494,7 +494,7 @@ class TestOWASPComplianceChecker:
         from sentinelguard import SentinelGuard
         from sentinelguard.owasp import OWASPComplianceChecker
 
-        guard = SentinelGuard()
+        guard = SentinelGuard.empty()
         checker = OWASPComplianceChecker()
         report = checker.check(guard)
 
@@ -505,7 +505,7 @@ class TestOWASPComplianceChecker:
         from sentinelguard import SentinelGuard
         from sentinelguard.owasp import OWASPComplianceChecker
 
-        guard = SentinelGuard()
+        guard = SentinelGuard.empty()
         guard.use("prompt_injection", on="prompt")
 
         checker = OWASPComplianceChecker()

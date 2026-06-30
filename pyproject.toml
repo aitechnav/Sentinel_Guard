@@ -52,6 +52,11 @@ api = [
     "uvicorn>=0.23.0",
     "httpx>=0.24.0",
 ]
+gateway = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "httpx>=0.24.0",
+]
 monitoring = [
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",

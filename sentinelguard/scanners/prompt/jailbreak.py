@@ -189,10 +189,14 @@ class JailbreakScanner(PromptScanner):
         self._load_model()
         model_score = self._model_scan(text) if self._model else 0.0
 
-        pattern_weight = 1.0 - self.model_weight
-        final_score = pattern_score * pattern_weight + model_score * self.model_weight
-        if pattern_score > 0.3 and model_score > 0.5:
-            final_score = min(1.0, final_score * 1.15)
+        if self._model:
+            pattern_weight = 1.0 - self.model_weight
+            weighted_score = pattern_score * pattern_weight + model_score * self.model_weight
+            final_score = max(pattern_score, model_score, weighted_score)
+            if pattern_score > 0.3 and model_score > 0.5:
+                final_score = min(1.0, final_score * 1.15)
+        else:
+            final_score = pattern_score
 
         is_valid = final_score < self.threshold
 

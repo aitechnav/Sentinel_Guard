@@ -53,7 +53,7 @@ class SentinelGuard:
             prompt_scanners: Explicit list of prompt scanners.
             output_scanners: Explicit list of output scanners.
         """
-        self.config = config or GuardConfig()
+        self.config = config or GuardConfig.preset_standard()
         self._setup_logging()
 
         if prompt_scanners is not None:
@@ -86,6 +86,7 @@ class SentinelGuard:
         scanner_name: str,
         on: str = "prompt",
         threshold: float = 0.5,
+        on_fail: str = "block",
         **kwargs: Any,
     ) -> SentinelGuard:
         """Add a scanner by name. Returns self for chaining.
@@ -94,6 +95,7 @@ class SentinelGuard:
             scanner_name: Name of the registered scanner.
             on: Target - 'prompt', 'output', or 'both'.
             threshold: Detection threshold.
+            on_fail: Action for detections - 'block', 'warn', 'sanitize', or 'allow'.
             **kwargs: Scanner-specific parameters.
 
         Returns:
@@ -103,7 +105,8 @@ class SentinelGuard:
             scanner_cls = ScannerRegistry.get_prompt_scanner(scanner_name)
             if scanner_cls:
                 self._prompt_pipeline.add_scanner(
-                    scanner_cls(threshold=threshold, **kwargs)
+                    scanner_cls(threshold=threshold, **kwargs),
+                    on_fail=on_fail,
                 )
             else:
                 logger.warning(f"Prompt scanner '{scanner_name}' not found")
@@ -112,28 +115,35 @@ class SentinelGuard:
             scanner_cls = ScannerRegistry.get_output_scanner(scanner_name)
             if scanner_cls:
                 self._output_pipeline.add_scanner(
-                    scanner_cls(threshold=threshold, **kwargs)
+                    scanner_cls(threshold=threshold, **kwargs),
+                    on_fail=on_fail,
                 )
             else:
                 logger.warning(f"Output scanner '{scanner_name}' not found")
 
         return self
 
-    def use_many(self, *scanners: BaseScanner, on: str = "prompt") -> SentinelGuard:
+    def use_many(
+        self,
+        *scanners: BaseScanner,
+        on: str = "prompt",
+        on_fail: str = "block",
+    ) -> SentinelGuard:
         """Add multiple scanner instances. Returns self for chaining.
 
         Args:
             *scanners: Scanner instances to add.
             on: Target - 'prompt', 'output', or 'both'.
+            on_fail: Action for detections - 'block', 'warn', 'sanitize', or 'allow'.
 
         Returns:
             Self for method chaining.
         """
         for scanner in scanners:
             if on in ("prompt", "both"):
-                self._prompt_pipeline.add_scanner(scanner)
+                self._prompt_pipeline.add_scanner(scanner, on_fail=on_fail)
             if on in ("output", "both"):
-                self._output_pipeline.add_scanner(scanner)
+                self._output_pipeline.add_scanner(scanner, on_fail=on_fail)
         return self
 
     # ── Factory Methods ──
@@ -161,6 +171,16 @@ class SentinelGuard:
     def minimal(cls) -> SentinelGuard:
         """Create a guard with minimal essential scanners."""
         return cls(config=GuardConfig.preset_minimal())
+
+    @classmethod
+    def empty(cls) -> SentinelGuard:
+        """Create a guard with no active scanners."""
+        return cls(config=GuardConfig.preset_empty())
+
+    @classmethod
+    def standard(cls) -> SentinelGuard:
+        """Create a guard with the default chatbot safety scanners."""
+        return cls(config=GuardConfig.preset_standard())
 
     @classmethod
     def strict(cls) -> SentinelGuard:

@@ -72,6 +72,100 @@ print(result.is_valid)        # False
 print(result.failed_scanners) # ['prompt_injection']
 ```
 
+### Use as an LLM Gateway
+
+SentinelGuard can also run as an OpenAI-compatible gateway in front of an LLM
+provider. Your app sends chat completions to SentinelGuard, SentinelGuard scans
+the last user message, forwards the safe request upstream, scans the assistant
+response, and returns the safe response.
+
+```bash
+pip install sentinelguard[gateway]
+
+export OPENAI_API_KEY="sk-..."
+sentinelguard gateway --provider openai --port 8080
+```
+
+Native provider adapters are also available:
+
+```bash
+# Anthropic Claude
+export ANTHROPIC_API_KEY="sk-ant-..."
+sentinelguard gateway --provider anthropic --port 8080
+
+# Google Gemini
+export GEMINI_API_KEY="..."
+sentinelguard gateway --provider gemini --port 8080
+```
+
+Then point an OpenAI-compatible client at the gateway:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="not-used-when-gateway-uses-OPENAI_API_KEY",
+    base_url="http://localhost:8080/v1",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o-mini",  # or the Claude/Gemini model routed by the gateway
+    messages=[{"role": "user", "content": "What is the weather today?"}],
+)
+```
+
+For IDEs and AI tools, configure the tool's OpenAI-compatible base URL or
+custom provider endpoint to use the gateway:
+
+```text
+http://localhost:8080/v1
+```
+
+When traffic is routed through this URL, SentinelGuard scans prompts before
+they reach the upstream LLM and scans model responses before they are returned.
+Registering SentinelGuard only as an MCP server gives the IDE optional scanning
+tools; it does not automatically intercept every chat prompt.
+
+Streaming clients are supported with `stream=true`. By default, SentinelGuard
+uses buffered streaming: it collects the upstream response, scans or sanitizes
+the complete output, then emits OpenAI-compatible server-sent events back to the
+client. This avoids leaking unscanned output tokens.
+
+Gateway behavior can be controlled with YAML:
+
+```yaml
+gateway:
+  enabled: true
+  provider: openai
+  upstream_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  default_max_tokens: 1024
+  streaming_mode: buffered
+  block_on_prompt_fail: true
+  block_on_output_fail: true
+  sanitize: true
+```
+
+Provider defaults:
+
+| Provider | Default upstream | Default API key env |
+| --- | --- | --- |
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `anthropic` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
+| `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
+
+Gemini also checks `GOOGLE_API_KEY` when `GEMINI_API_KEY` is not set.
+
+Run with the gateway config:
+
+```bash
+sentinelguard gateway --gateway-config gateway.yaml --port 8080
+```
+
+Set `enabled: false` to run the gateway in pass-through mode without scanning.
+Package mode remains available at the same time through `from sentinelguard
+import SentinelGuard`.
+
 ### OWASP-Compliant Configuration
 
 ```python
