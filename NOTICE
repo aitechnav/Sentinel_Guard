@@ -1,0 +1,17 @@
+SentinelGuard
+Copyright 2026 Anuj Tyagi and SentinelGuard Contributors
+
+This product includes software developed by Anuj Tyagi.
+
+========================================================================
+CITATION REQUIREMENT
+========================================================================
+
+If you use this software in your research, product, or derivative work,
+you must cite the original work. Please use the citation information
+provided in the CITATION.cff file at the root of this repository, or
+cite as:
+
+  Tyagi, A. (2026). SentinelGuard: A comprehensive, production-ready
+  LLM security and guardrails framework.
+  https://github.com/aitechnav/Sentinel_Guard
