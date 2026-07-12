@@ -3,7 +3,7 @@ message: "If you use this software, please cite it as below."
 type: software
 title: "SentinelGuard"
 version: "0.0.7"
-date-released: "2026-07-11"
+date-released: "2026-04-11"
 license: Apache-2.0
 url: "https://github.com/aitechnav/Sentinel_Guard"
 repository-code: "https://github.com/aitechnav/Sentinel_Guard"
