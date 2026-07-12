@@ -26,6 +26,9 @@ class GatewayConfig:
     default_max_tokens: int = 1024
     anthropic_version: str = "2023-06-01"
     streaming_mode: str = "buffered"
+    metrics_enabled: bool = True
+    audit_enabled: bool = True
+    audit_hash_salt_env: str = "SENTINELGUARD_AUDIT_SALT"
 
     @classmethod
     def from_yaml(cls, path: Union[str, Path]) -> GatewayConfig:
@@ -63,4 +66,7 @@ class GatewayConfig:
             "default_max_tokens": self.default_max_tokens,
             "anthropic_version": self.anthropic_version,
             "streaming_mode": self.streaming_mode,
+            "metrics_enabled": self.metrics_enabled,
+            "audit_enabled": self.audit_enabled,
+            "audit_hash_salt_env": self.audit_hash_salt_env,
         }

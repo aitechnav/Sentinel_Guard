@@ -1,10 +1,9 @@
 """Bias detection scanner.
 
-Detects biased language in LLM outputs using regex patterns combined with
-the ``d4data/bias-detection-model`` HuggingFace transformer (DistilBERT
-fine-tuned on a news-bias corpus).
+Detects biased language in LLM outputs using regex patterns and an optional
+Hugging Face transformer.
 
-Both methods always run. Final score = regex * (1 - model_weight) +
+When the model is enabled, final score = regex * (1 - model_weight) +
 model * model_weight, with a confidence boost when both agree.
 
 OWASP LLM Top 10: LLM02 (Sensitive Information Disclosure / Bias)
@@ -14,9 +13,10 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union
 
 from sentinelguard.core.scanner import OutputScanner, RiskLevel, ScanResult, register_scanner
+from sentinelguard.models import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +81,16 @@ class BiasScanner(OutputScanner):
 
     Combines regex pattern matching (gender, racial, age, disability,
     socioeconomic, religion, nationality — 30+ patterns) with the
-    ``d4data/bias-detection-model`` HuggingFace transformer for
-    context-aware, nuanced detection.
+    Hugging Face transformer for context-aware, nuanced detection.
 
-    Both methods run on every call. Final score is a weighted blend.
+    Regex runs on every call. The optional model contributes when enabled.
 
     Args:
         threshold: Score threshold (0.0-1.0). Default 0.5.
         categories: Bias categories to check. ``None`` = all 7 categories.
         model_weight: Model score weight in combined result. Default 0.6.
+        use_model: "auto" uses background-warmed model if ready, True loads synchronously,
+            False disables model scoring.
     """
 
     scanner_name: ClassVar[str] = "bias"
@@ -100,22 +101,17 @@ class BiasScanner(OutputScanner):
         threshold: float = 0.5,
         categories: Optional[List[str]] = None,
         model_weight: float = 0.6,
+        use_model: Union[bool, str] = "auto",
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
         self.categories = categories or list(BIAS_PATTERNS.keys())
         self.model_weight = max(0.0, min(1.0, model_weight))
+        self.use_model = use_model
         self._model = None  # lazy-loaded on first scan() call
 
     def _load_model(self) -> None:
-        if self._model is None:
-            try:
-                from transformers import pipeline as hf_pipeline
-                logger.info("Loading bias detection model: %s", _BIAS_MODEL_ID)
-                self._model = hf_pipeline("text-classification", model=_BIAS_MODEL_ID)
-            except Exception as exc:
-                logger.warning("Failed to load bias model, falling back to regex only: %s", exc)
-                self._model = False  # sentinel: tried and failed
+        self._model = resolve_model(self.scanner_name, self.use_model)
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         regex_score, found_bias = self._regex_scan(text)
@@ -144,6 +140,7 @@ class BiasScanner(OutputScanner):
                 "regex_score": regex_score,
                 "model_score": model_score,
                 "model_name": _BIAS_MODEL_ID,
+                "use_model": self.use_model,
             },
         )
 

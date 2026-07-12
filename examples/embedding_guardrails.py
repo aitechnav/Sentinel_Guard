@@ -5,7 +5,11 @@ from sentinelguard.embeddings import EmbeddingGuardrail, SemanticSimilarity
 
 def example_topic_enforcement():
     """Enforce allowed and banned topics."""
-    guardrail = EmbeddingGuardrail()
+    guardrail = EmbeddingGuardrail(
+        similarity_engine=SemanticSimilarity(use_model=False),
+        allowed_threshold=0.22,
+        banned_threshold=0.5,
+    )
 
     # Define allowed topics
     guardrail.add_allowed_topics({
@@ -34,15 +38,17 @@ def example_topic_enforcement():
             "Should I sue them?",
             "What are my legal rights?",
             "Write a contract for me",
+            "Should I file a lawsuit?",
         ],
     })
 
     # Test various inputs
     test_inputs = [
-        "Where is my order?",
+        "I would like to track my package",
         "What medication should I take for a headache?",
-        "Tell me about your latest laptop",
+        "Tell me about this product",
         "Should I file a lawsuit?",
+        "Explain quantum physics",
     ]
 
     for text in test_inputs:
@@ -72,21 +78,22 @@ def example_semantic_similarity():
 def example_ood_detection():
     """Detect out-of-distribution inputs."""
     guardrail = EmbeddingGuardrail(
-        allowed_threshold=0.3,
-        ood_threshold=0.1,
+        similarity_engine=SemanticSimilarity(use_model=False),
+        allowed_threshold=0.25,
+        ood_threshold=0.15,
     )
 
     guardrail.add_allowed_topics({
         "cooking": [
-            "How do I make pasta?",
-            "What is the best recipe for cake?",
-            "How long should I cook chicken?",
+            "pasta recipe cooking noodles sauce",
+            "cake baking recipe oven",
+            "chicken cooking temperature",
         ],
     })
 
     test_inputs = [
-        "How do I bake bread?",  # Related to cooking
-        "What is quantum physics?",  # Out of distribution
+        "bake bread recipe",  # Related to cooking
+        "database replication cluster",  # Out of distribution
     ]
 
     for text in test_inputs:

@@ -53,6 +53,34 @@ print(report.summary())
 pip install sentinelguard
 ```
 
+For model-backed prompt injection, jailbreak, toxicity, and bias scanners,
+install the optional model extra:
+
+```bash
+pip install "sentinelguard[models]"
+```
+
+With `sentinelguard[models]`, SentinelGuard starts a background model warmup
+for configured model-backed scanners when the guard is created. Scanning is
+still available immediately through the built-in rules and heuristics; model
+scores are used automatically once the models are ready. The optional models
+can require more than 2 GB of local cache space depending on platform and
+Hugging Face cache state.
+
+You can disable background warmup if needed:
+
+```python
+from sentinelguard import GuardConfig, SentinelGuard
+
+guard = SentinelGuard(config=GuardConfig(model_warmup=False))
+```
+
+Or in YAML:
+
+```yaml
+model_warmup: false
+```
+
 ## Quick Start
 
 ### Simple Scanning
@@ -80,7 +108,7 @@ the last user message, forwards the safe request upstream, scans the assistant
 response, and returns the safe response.
 
 ```bash
-pip install sentinelguard[gateway]
+pip install "sentinelguard[gateway]"
 
 export OPENAI_API_KEY="sk-..."
 sentinelguard gateway --provider openai --port 8080
@@ -141,6 +169,9 @@ gateway:
   api_key_env: OPENAI_API_KEY
   default_max_tokens: 1024
   streaming_mode: buffered
+  metrics_enabled: true
+  audit_enabled: true
+  audit_hash_salt_env: SENTINELGUARD_AUDIT_SALT
   block_on_prompt_fail: true
   block_on_output_fail: true
   sanitize: true
@@ -165,6 +196,72 @@ sentinelguard gateway --gateway-config gateway.yaml --port 8080
 Set `enabled: false` to run the gateway in pass-through mode without scanning.
 Package mode remains available at the same time through `from sentinelguard
 import SentinelGuard`.
+
+To combine gateway mode with model-backed detection:
+
+```bash
+pip install "sentinelguard[gateway,models]"
+```
+
+To expose Prometheus metrics for gateway detections:
+
+```bash
+pip install "sentinelguard[gateway,monitoring]"
+```
+
+Scrape the gateway:
+
+```yaml
+scrape_configs:
+  - job_name: sentinelguard-gateway
+    static_configs:
+      - targets: ["localhost:8080"]
+    metrics_path: /metrics
+```
+
+Detection metrics use safe, low-cardinality labels and never include prompt
+text, response text, matched PII, or secrets. Example alert rules:
+
+```yaml
+groups:
+  - name: sentinelguard
+    rules:
+      - alert: SentinelGuardPIIDetected
+        expr: increase(sentinelguard_detections_total{category="pii"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: SentinelGuard detected PII in chat traffic
+
+      - alert: SentinelGuardSecretDetected
+        expr: increase(sentinelguard_detections_total{category="secret"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: SentinelGuard detected a secret in chat traffic
+
+      - alert: SentinelGuardAttackDetected
+        expr: increase(sentinelguard_detections_total{category="attack"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: SentinelGuard detected an LLM attack attempt
+```
+
+Gateway audit logs can be enabled for incident tracking without storing chat
+content:
+
+```bash
+export SENTINELGUARD_AUDIT_SALT="use-a-long-random-secret"
+```
+
+Audit events are emitted as JSON through the `sentinelguard.audit` logger when
+a scanner detects PII, secrets, attacks, or other policy failures. The event
+includes `request_id`, hashed `user_hash`, hashed `tenant_hash`, `direction`,
+`category`, `scanner`, `risk_level`, `action`, and provider metadata. It does
+not include prompt text, response text, matched PII, or secret values. Pass
+identity context with headers such as `X-Request-ID`, `X-User-ID`, and
+`X-Tenant-ID`, or with the OpenAI-compatible `user` payload field.
 
 ### OWASP-Compliant Configuration
 

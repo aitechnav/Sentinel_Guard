@@ -54,6 +54,7 @@ class GuardConfig:
         max_workers: Max parallel workers.
         prompt_scanners: Configuration for prompt scanners.
         output_scanners: Configuration for output scanners.
+        model_warmup: Warm optional model scanners in the background.
         log_level: Logging level.
     """
 
@@ -63,7 +64,13 @@ class GuardConfig:
     max_workers: int = 4
     prompt_scanners: Dict[str, ScannerConfig] = field(default_factory=dict)
     output_scanners: Dict[str, ScannerConfig] = field(default_factory=dict)
+    model_warmup: bool = True
     log_level: str = "INFO"
+
+    def __post_init__(self) -> None:
+        """Normalize direct dataclass construction inputs."""
+        if isinstance(self.mode, str):
+            self.mode = GuardMode(self.mode)
 
     @classmethod
     def from_yaml(cls, path: Union[str, Path]) -> GuardConfig:
@@ -88,6 +95,7 @@ class GuardConfig:
         fail_fast = data.get("fail_fast", False)
         parallel = data.get("parallel", True)
         max_workers = data.get("max_workers", 4)
+        model_warmup = data.get("model_warmup", True)
         log_level = data.get("log_level", "INFO")
 
         prompt_scanners = {}
@@ -109,6 +117,7 @@ class GuardConfig:
             fail_fast=fail_fast,
             parallel=parallel,
             max_workers=max_workers,
+            model_warmup=model_warmup,
             prompt_scanners=prompt_scanners,
             output_scanners=output_scanners,
             log_level=log_level,
@@ -121,6 +130,7 @@ class GuardConfig:
             "fail_fast": self.fail_fast,
             "parallel": self.parallel,
             "max_workers": self.max_workers,
+            "model_warmup": self.model_warmup,
             "log_level": self.log_level,
             "prompt_scanners": {
                 name: {

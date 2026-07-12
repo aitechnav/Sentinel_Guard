@@ -8,6 +8,12 @@ Get up and running with SentinelGuard in 5 minutes.
 pip install sentinelguard
 ```
 
+For optional model-backed detection with automatic background warmup:
+
+```bash
+pip install "sentinelguard[models]"
+```
+
 ## 2. Basic Usage
 
 ```python
@@ -105,6 +111,12 @@ http://localhost:8080/v1
 The gateway protects traffic only when the app or IDE sends model requests
 through that URL.
 Requests with `stream=true` are supported with safe buffered streaming.
+Install `sentinelguard[gateway,models]` to use gateway mode with optional
+model-backed detection.
+Install `sentinelguard[gateway,monitoring]` to expose Prometheus metrics at
+`/metrics` for PII, secret, and attack detections.
+Set `SENTINELGUARD_AUDIT_SALT` and pass `X-User-ID` / `X-Tenant-ID` headers
+to get privacy-safe JSON audit logs for detections.
 
 ## 7. YAML Configuration
 
@@ -112,6 +124,7 @@ Create `sentinelguard.yaml`:
 
 ```yaml
 mode: standard
+model_warmup: true
 prompt_scanners:
   prompt_injection:
     enabled: true

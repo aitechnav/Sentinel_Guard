@@ -16,6 +16,7 @@ from sentinelguard.core.scanner import (
     BaseScanner,
     ScannerRegistry,
 )
+from sentinelguard.models import warmup_for_scanners
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,21 @@ class SentinelGuard:
         else:
             self._output_pipeline = ScannerPipeline.from_config(self.config, "output")
 
+        self._warmup_optional_models()
+
     def _setup_logging(self):
         logging.basicConfig(level=getattr(logging, self.config.log_level, logging.INFO))
+
+    def _warmup_optional_models(self) -> None:
+        """Start non-blocking warmup for scanners that use optional models."""
+        if not self.config.model_warmup:
+            return
+        warmup_for_scanners(self._prompt_pipeline.scanners)
+        warmup_for_scanners(self._output_pipeline.scanners)
+
+    def _maybe_warmup_scanner(self, scanner: BaseScanner) -> None:
+        if self.config.model_warmup:
+            warmup_for_scanners([scanner])
 
     # ── Builder API (inspired by guardrails-ai Guard.use()) ──
 
@@ -104,20 +118,24 @@ class SentinelGuard:
         if on in ("prompt", "both"):
             scanner_cls = ScannerRegistry.get_prompt_scanner(scanner_name)
             if scanner_cls:
+                scanner = scanner_cls(threshold=threshold, **kwargs)
                 self._prompt_pipeline.add_scanner(
-                    scanner_cls(threshold=threshold, **kwargs),
+                    scanner,
                     on_fail=on_fail,
                 )
+                self._maybe_warmup_scanner(scanner)
             else:
                 logger.warning(f"Prompt scanner '{scanner_name}' not found")
 
         if on in ("output", "both"):
             scanner_cls = ScannerRegistry.get_output_scanner(scanner_name)
             if scanner_cls:
+                scanner = scanner_cls(threshold=threshold, **kwargs)
                 self._output_pipeline.add_scanner(
-                    scanner_cls(threshold=threshold, **kwargs),
+                    scanner,
                     on_fail=on_fail,
                 )
+                self._maybe_warmup_scanner(scanner)
             else:
                 logger.warning(f"Output scanner '{scanner_name}' not found")
 
@@ -144,6 +162,7 @@ class SentinelGuard:
                 self._prompt_pipeline.add_scanner(scanner, on_fail=on_fail)
             if on in ("output", "both"):
                 self._output_pipeline.add_scanner(scanner, on_fail=on_fail)
+            self._maybe_warmup_scanner(scanner)
         return self
 
     # ── Factory Methods ──

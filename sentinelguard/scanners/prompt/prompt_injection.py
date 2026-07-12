@@ -1,18 +1,18 @@
 """Prompt injection detection scanner.
 
 Detects attempts to manipulate LLM behavior through injection attacks
-using pattern matching, heuristics, and the
+using pattern matching, heuristics, and an optional
 ``protectai/deberta-v3-base-prompt-injection-v2`` HuggingFace transformer.
-All three methods always run.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import Any, ClassVar, List, Optional
+from typing import Any, ClassVar, List, Optional, Union
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
+from sentinelguard.models import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +68,11 @@ _INJECTION_MODEL_ID = "protectai/deberta-v3-base-prompt-injection-v2"
 class PromptInjectionScanner(PromptScanner):
     """Detects prompt injection attempts using three combined methods.
 
-    Methods (all always run):
+    Methods:
         1. Pattern matching — 30+ known injection signatures
         2. Heuristic analysis — instruction density, role-play language,
            special-char abuse, excessive capitalization
-        3. ``protectai/deberta-v3-base-prompt-injection-v2`` — DeBERTa v3
+        3. Optional ``protectai/deberta-v3-base-prompt-injection-v2`` — DeBERTa v3
            fine-tuned specifically for prompt injection classification
 
     Final score = pattern * 0.3 + heuristic * 0.2 + model * 0.5.
@@ -80,6 +80,8 @@ class PromptInjectionScanner(PromptScanner):
     Args:
         threshold: Score threshold (0.0-1.0). Default 0.5.
         patterns: Additional regex patterns to check.
+        use_model: "auto" uses background-warmed model if ready, True loads synchronously,
+            False disables model scoring.
     """
 
     scanner_name: ClassVar[str] = "prompt_injection"
@@ -88,21 +90,16 @@ class PromptInjectionScanner(PromptScanner):
         self,
         threshold: float = 0.5,
         patterns: Optional[List[str]] = None,
+        use_model: Union[bool, str] = "auto",
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
         self._extra_patterns = [re.compile(p) for p in (patterns or [])]
+        self.use_model = use_model
         self._model = None  # lazy-loaded on first scan() call
 
     def _load_model(self) -> None:
-        if self._model is None:
-            try:
-                from transformers import pipeline as hf_pipeline
-                logger.info("Loading prompt injection model: %s", _INJECTION_MODEL_ID)
-                self._model = hf_pipeline("text-classification", model=_INJECTION_MODEL_ID)
-            except Exception as exc:
-                logger.warning("Failed to load injection model, falling back to patterns+heuristics: %s", exc)
-                self._model = False
+        self._model = resolve_model(self.scanner_name, self.use_model)
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         pattern_score, matched = self._pattern_scan(text)
@@ -131,6 +128,7 @@ class PromptInjectionScanner(PromptScanner):
                 "matched_patterns": matched,
                 "heuristics": heuristics,
                 "model_name": _INJECTION_MODEL_ID,
+                "use_model": self.use_model,
             },
         )
 
