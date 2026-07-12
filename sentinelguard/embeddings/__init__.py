@@ -94,6 +94,12 @@ class SemanticSimilarity:
         except ImportError:
             self._model_available = False
             logger.info("sentence-transformers not available, using TF-IDF fallback")
+        except Exception as exc:
+            self._model_available = False
+            logger.warning(
+                "embedding model unavailable (%s), using TF-IDF fallback",
+                exc,
+            )
         return self._model_available
 
     def encode(self, texts: List[str]) -> List[List[float]]:
@@ -149,30 +155,25 @@ class SemanticSimilarity:
 
     def _tfidf_encode(self, texts: List[str]) -> List[List[float]]:
         """Simple TF-IDF-like encoding fallback."""
+        import hashlib
         import re
         from collections import Counter
 
-        # Build vocabulary from all texts
-        all_words: set = set()
+        vector_size = 512
         text_word_counts = []
         for text in texts:
             words = re.findall(r"\b\w+\b", text.lower())
-            counter = Counter(words)
-            text_word_counts.append(counter)
-            all_words.update(words)
+            text_word_counts.append(Counter(words))
 
-        vocab = sorted(all_words)
-        vocab_idx = {w: i for i, w in enumerate(vocab)}
-
-        # Compute TF vectors
         embeddings = []
         for counter in text_word_counts:
             total = max(sum(counter.values()), 1)
-            vec = [0.0] * len(vocab)
+            vec = [0.0] * vector_size
             for word, count in counter.items():
-                if word in vocab_idx:
-                    vec[vocab_idx[word]] = count / total
-            # Normalize
+                digest = hashlib.sha256(word.encode("utf-8")).digest()
+                index = int.from_bytes(digest[:4], "big") % vector_size
+                vec[index] += count / total
+
             norm = math.sqrt(sum(x * x for x in vec))
             if norm > 0:
                 vec = [x / norm for x in vec]

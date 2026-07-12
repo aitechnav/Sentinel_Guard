@@ -3,9 +3,9 @@
 Dedicated scanner for detecting attempts to bypass LLM safety guardrails.
 
 Detection strategy:
-  1. Regex patterns — 60+ signatures across 10 attack families (always runs)
-  2. ``jackhhao/jailbreak-classifier`` HuggingFace model — fine-tuned
-     specifically for jailbreak detection (always runs)
+  1. Regex patterns — 60+ signatures across 10 attack families
+  2. Optional ``jackhhao/jailbreak-classifier`` HuggingFace model — fine-tuned
+     specifically for jailbreak detection
 
 Final score = pattern_score * (1 - model_weight) + model_score * model_weight,
 with a confidence boost when both signals agree.
@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union
 
 from sentinelguard.core.scanner import PromptScanner, RiskLevel, ScanResult, register_scanner
+from sentinelguard.models import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ class JailbreakScanner(PromptScanner):
     """Detects jailbreak attempts targeting LLM safety guardrails.
 
     Covers 60+ patterns across 10 attack families plus the
-    ``jackhhao/jailbreak-classifier`` HuggingFace model. Both always run.
+    ``jackhhao/jailbreak-classifier`` HuggingFace model when enabled.
 
     Attack families: DAN variants, developer mode, instruction override,
     persona swap, hypothetical framing, social engineering, token
@@ -157,6 +158,8 @@ class JailbreakScanner(PromptScanner):
         threshold: Score threshold (0.0-1.0). Default 0.4.
         model_weight: Model score weight in combined result. Default 0.5.
         families: Attack families to check. ``None`` = all 10.
+        use_model: "auto" uses background-warmed model if ready, True loads synchronously,
+            False disables model scoring.
     """
 
     scanner_name: ClassVar[str] = "jailbreak"
@@ -167,22 +170,17 @@ class JailbreakScanner(PromptScanner):
         threshold: float = 0.4,
         model_weight: float = 0.5,
         families: Optional[List[str]] = None,
+        use_model: Union[bool, str] = "auto",
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
         self.model_weight = max(0.0, min(1.0, model_weight))
         self.families = families or list(JAILBREAK_PATTERNS.keys())
+        self.use_model = use_model
         self._model = None  # lazy-loaded on first scan() call
 
     def _load_model(self) -> None:
-        if self._model is None:
-            try:
-                from transformers import pipeline as hf_pipeline
-                logger.info("Loading jailbreak detection model: %s", _JAILBREAK_MODEL_ID)
-                self._model = hf_pipeline("text-classification", model=_JAILBREAK_MODEL_ID)
-            except Exception as exc:
-                logger.warning("Failed to load jailbreak model, falling back to patterns only: %s", exc)
-                self._model = False
+        self._model = resolve_model(self.scanner_name, self.use_model)
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         pattern_score, matched_families, total_matches = self._pattern_scan(text)
@@ -210,6 +208,7 @@ class JailbreakScanner(PromptScanner):
                 "pattern_score": pattern_score,
                 "model_score": model_score,
                 "model_name": _JAILBREAK_MODEL_ID,
+                "use_model": self.use_model,
             },
         )
 

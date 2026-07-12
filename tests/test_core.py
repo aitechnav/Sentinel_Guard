@@ -66,11 +66,13 @@ class TestGuardConfig:
         assert config.mode == GuardMode.STANDARD
         assert config.parallel is True
         assert config.fail_fast is False
+        assert config.model_warmup is True
 
     def test_from_dict(self):
         data = {
             "mode": "strict",
             "fail_fast": True,
+            "model_warmup": False,
             "prompt_scanners": {
                 "pii": {"enabled": True, "threshold": 0.3},
             },
@@ -78,13 +80,20 @@ class TestGuardConfig:
         config = GuardConfig.from_dict(data)
         assert config.mode == GuardMode.STRICT
         assert config.fail_fast is True
+        assert config.model_warmup is False
         assert "pii" in config.prompt_scanners
         assert config.prompt_scanners["pii"].threshold == 0.3
 
     def test_to_dict(self):
-        config = GuardConfig(mode=GuardMode.STRICT)
+        config = GuardConfig(mode=GuardMode.STRICT, model_warmup=False)
         d = config.to_dict()
         assert d["mode"] == "strict"
+        assert d["model_warmup"] is False
+
+    def test_direct_string_mode(self):
+        config = GuardConfig(mode="strict")
+        assert config.mode == GuardMode.STRICT
+        assert config.to_dict()["mode"] == "strict"
 
     def test_preset_minimal(self):
         config = GuardConfig.preset_minimal()
@@ -161,6 +170,42 @@ class TestSentinelGuard:
         guard = SentinelGuard()
         guard.use("prompt_injection", on="prompt", threshold=0.7)
         assert "prompt_injection" in guard.prompt_scanner_names
+
+    def test_guard_starts_optional_model_warmup(self, monkeypatch):
+        calls = []
+
+        def fake_warmup(scanners):
+            calls.append([scanner.scanner_name for scanner in scanners])
+
+        monkeypatch.setattr("sentinelguard.core.guard.warmup_for_scanners", fake_warmup)
+
+        SentinelGuard(
+            config=GuardConfig(
+                prompt_scanners={
+                    "prompt_injection": ScannerConfig(enabled=True, threshold=0.5),
+                }
+            )
+        )
+
+        assert ["prompt_injection"] in calls
+
+    def test_guard_can_disable_optional_model_warmup(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "sentinelguard.core.guard.warmup_for_scanners",
+            lambda scanners: calls.append(list(scanners)),
+        )
+
+        SentinelGuard(
+            config=GuardConfig(
+                model_warmup=False,
+                prompt_scanners={
+                    "prompt_injection": ScannerConfig(enabled=True, threshold=0.5),
+                },
+            )
+        )
+
+        assert calls == []
 
     def test_scan_safe_prompt(self, safe_prompt):
         guard = SentinelGuard.minimal()

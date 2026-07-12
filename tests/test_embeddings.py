@@ -65,6 +65,27 @@ class TestEmbeddingGuardrail:
         # With TF-IDF, this should have some similarity
         assert isinstance(result, EmbeddingResult)
 
+    def test_tfidf_fallback_compares_topics_across_calls(self):
+        guardrail = EmbeddingGuardrail(
+            similarity_engine=SemanticSimilarity(use_model=False),
+            allowed_threshold=0.2,
+            banned_threshold=0.45,
+        )
+        guardrail.add_allowed_topics({
+            "customer_support": ["order tracking package delivery"],
+        })
+        guardrail.add_banned_topics({
+            "medical_advice": ["medical diagnosis medication treatment"],
+        })
+
+        allowed = guardrail.check("track my order package")
+        blocked = guardrail.check("medical diagnosis medication")
+
+        assert allowed.is_allowed
+        assert allowed.closest_topic == "customer_support"
+        assert not blocked.is_allowed
+        assert blocked.closest_topic == "medical_advice"
+
     def test_no_topics_configured(self):
         guardrail = EmbeddingGuardrail(
             similarity_engine=SemanticSimilarity(use_model=False),

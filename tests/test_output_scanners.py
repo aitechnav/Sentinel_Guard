@@ -1,7 +1,5 @@
 """Tests for output scanners."""
 
-import pytest
-
 from sentinelguard.scanners.output import (
     BiasScanner,
     RelevanceScanner,

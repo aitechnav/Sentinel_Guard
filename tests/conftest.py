@@ -3,6 +3,16 @@
 import pytest
 
 from sentinelguard import SentinelGuard, GuardConfig, ScannerConfig
+from sentinelguard.models import reset_model_cache
+
+
+@pytest.fixture(autouse=True)
+def disable_model_warmup(monkeypatch):
+    """Keep tests from downloading optional Hugging Face models."""
+    monkeypatch.setenv("SENTINELGUARD_DISABLE_MODEL_WARMUP", "1")
+    reset_model_cache()
+    yield
+    reset_model_cache()
 
 
 @pytest.fixture

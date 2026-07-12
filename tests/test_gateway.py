@@ -30,6 +30,9 @@ class TestGatewayConfig:
         assert config.sanitize is True
         assert config.default_max_tokens == 1024
         assert config.streaming_mode == "buffered"
+        assert config.metrics_enabled is True
+        assert config.audit_enabled is True
+        assert config.audit_hash_salt_env == "SENTINELGUARD_AUDIT_SALT"
 
     def test_from_nested_dict(self):
         config = GatewayConfig.from_dict(
@@ -39,6 +42,9 @@ class TestGatewayConfig:
                     "provider": "openai-compatible",
                     "upstream_url": "http://localhost:11434/v1",
                     "sanitize": False,
+                    "metrics_enabled": False,
+                    "audit_enabled": False,
+                    "audit_hash_salt_env": "CUSTOM_AUDIT_SALT",
                 }
             }
         )
@@ -46,6 +52,9 @@ class TestGatewayConfig:
         assert config.provider == "openai-compatible"
         assert config.upstream_url == "http://localhost:11434/v1"
         assert config.sanitize is False
+        assert config.metrics_enabled is False
+        assert config.audit_enabled is False
+        assert config.audit_hash_salt_env == "CUSTOM_AUDIT_SALT"
 
     def test_provider_defaults_are_effective_without_overwriting_config(self):
         anthropic = GatewayConfig(provider="anthropic")

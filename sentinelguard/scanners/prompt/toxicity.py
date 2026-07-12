@@ -2,16 +2,17 @@
 
 Identifies toxic, hateful, or offensive content using keyword/pattern
 matching combined with the ``unitary/toxic-bert`` HuggingFace transformer.
-Both methods always run.
+The transformer path is optional.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from sentinelguard.core.scanner import BaseScanner, ScannerType, RiskLevel, ScanResult, register_scanner
+from sentinelguard.models import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +63,13 @@ class ToxicityScanner(BaseScanner):
 
     Combines keyword/pattern matching (hate speech, threats, harassment,
     profanity, sexual content, self-harm) with ``unitary/toxic-bert``
-    HuggingFace transformer. Both always run; final score takes the max.
+    HuggingFace transformer when enabled; final score takes the max.
 
     Args:
         threshold: Score threshold (0.0-1.0). Default 0.7.
         categories: Toxic categories to check. ``None`` = all.
+        use_model: "auto" uses background-warmed model if ready, True loads synchronously,
+            False disables model scoring.
     """
 
     scanner_name: ClassVar[str] = "toxicity"
@@ -76,26 +79,24 @@ class ToxicityScanner(BaseScanner):
         self,
         threshold: float = 0.7,
         categories: Optional[List[str]] = None,
+        use_model: Union[bool, str] = "auto",
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
         self.categories = categories or list(TOXIC_CATEGORIES.keys())
+        self.use_model = use_model
         self._model = None  # lazy-loaded on first scan() call
 
     def _load_model(self) -> None:
-        if self._model is None:
-            try:
-                from transformers import pipeline as hf_pipeline
-                logger.info("Loading toxicity model: %s", _TOXICITY_MODEL_ID)
-                self._model = hf_pipeline("text-classification", model=_TOXICITY_MODEL_ID, top_k=None)
-            except Exception as exc:
-                logger.warning("Failed to load toxicity model, falling back to patterns: %s", exc)
-                self._model = False
+        self._model = resolve_model(self.scanner_name, self.use_model)
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         pattern_result = self._pattern_scan(text)
         self._load_model()
         if not self._model:
+            pattern_result.details.setdefault("model_score", 0.0)
+            pattern_result.details.setdefault("model_name", _TOXICITY_MODEL_ID)
+            pattern_result.details.setdefault("use_model", self.use_model)
             return pattern_result
         model_result = self._run_model(text)
 
@@ -155,6 +156,9 @@ class ToxicityScanner(BaseScanner):
             details={
                 "matched_categories": matched_categories,
                 "total_matches": total_matches,
+                "model_score": 0.0,
+                "model_name": _TOXICITY_MODEL_ID,
+                "use_model": self.use_model,
             },
         )
 
@@ -172,7 +176,11 @@ class ToxicityScanner(BaseScanner):
                     is_valid=is_valid,
                     score=toxic_score,
                     risk_level=self._score_to_risk(toxic_score),
-                    details={"model_labels": labels, "model_name": _TOXICITY_MODEL_ID},
+                    details={
+                        "model_labels": labels,
+                        "model_name": _TOXICITY_MODEL_ID,
+                        "use_model": self.use_model,
+                    },
                 )
         except Exception as exc:
             logger.warning("Toxicity model inference failed: %s", exc)
