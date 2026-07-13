@@ -86,6 +86,26 @@ class TestPIIScanner:
 
 
 class TestSecretsScanner:
+    class FakeSecretsModel:
+        def __init__(self, score):
+            self.score = score
+            self.calls = []
+
+        def __call__(self, text, candidate_labels, hypothesis_template, multi_label):
+            self.calls.append({
+                "text": text,
+                "candidate_labels": candidate_labels,
+                "hypothesis_template": hypothesis_template,
+                "multi_label": multi_label,
+            })
+            return {
+                "labels": [
+                    "credential or secret disclosure",
+                    "password or passphrase disclosure",
+                ],
+                "scores": [self.score, 0.2],
+            }
+
     def test_no_secrets(self):
         scanner = SecretsScanner(threshold=0.5)
         result = scanner.scan("Hello world")
@@ -105,6 +125,113 @@ class TestSecretsScanner:
         scanner = SecretsScanner(threshold=0.5)
         result = scanner.scan("-----BEGIN RSA PRIVATE KEY-----")
         assert not result.is_valid
+
+    def test_contextual_password_without_separator_detected(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan("my password azqdwdd!@E!@1")
+        assert not result.is_valid
+        assert "contextual_password" in result.details["secret_types"]
+        assert "azqdwdd!@E!@1" not in str(result.details)
+
+    def test_contextual_plain_word_password_detected(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan("my password banana")
+        assert not result.is_valid
+        assert "contextual_password" in result.details["secret_types"]
+        assert "banana" not in str(result.details)
+
+    def test_contextual_plain_word_password_with_connector_detected(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan("the admin password is welcome")
+        assert not result.is_valid
+        assert any(
+            secret_type in result.details["secret_types"]
+            for secret_type in ("contextual_password", "generic_password")
+        )
+        assert "welcome" not in str(result.details)
+
+    def test_contextual_password_safe_word_with_connector_detected(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan("my password equals reset")
+        assert not result.is_valid
+        assert "contextual_password" in result.details["secret_types"]
+        assert "reset" not in str(result.details)
+
+    def test_contextual_quoted_passphrase_detected(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan('my passphrase is "correct horse battery staple"')
+        assert not result.is_valid
+        assert "contextual_password" in result.details["secret_types"]
+        assert "correct horse battery staple" not in str(result.details)
+        assert "correct horse battery staple" not in result.sanitized_output
+
+    def test_contextual_symbol_password_detected(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan("admin password @@!E@#@#")
+        assert not result.is_valid
+        assert "contextual_password" in result.details["secret_types"]
+
+    def test_contextual_api_token_detected(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan("my api token is !@ASASD")
+        assert not result.is_valid
+        assert "contextual_token" in result.details["secret_types"]
+
+    def test_contextual_secret_avoids_common_non_secret_phrase(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan("I forgot my password reset steps and token limit")
+        assert result.is_valid
+
+    def test_contextual_secret_avoids_password_manager_phrase(self):
+        scanner = SecretsScanner(threshold=0.5)
+        result = scanner.scan("I use a password manager and token rotation policy")
+        assert result.is_valid
+
+    def test_local_model_detects_ambiguous_credential_disclosure(self, monkeypatch):
+        model = self.FakeSecretsModel(score=0.93)
+        monkeypatch.setattr(
+            "sentinelguard.scanners.prompt.secrets.resolve_model",
+            lambda name, mode: model,
+        )
+
+        scanner = SecretsScanner(threshold=0.5, use_model=True)
+        result = scanner.scan("Here are the staging credentials, use banana for login.")
+
+        assert not result.is_valid
+        assert result.score >= 0.8
+        assert result.sanitized_output == "<SECRET:model_contextual_secret>"
+        assert "model_contextual_secret" in result.details["secret_types"]
+        assert result.details["model_score"] == 0.93
+        assert "banana" not in str(result.details)
+        assert model.calls[0]["multi_label"] is True
+
+    def test_local_model_low_confidence_does_not_block(self, monkeypatch):
+        monkeypatch.setattr(
+            "sentinelguard.scanners.prompt.secrets.resolve_model",
+            lambda name, mode: self.FakeSecretsModel(score=0.2),
+        )
+
+        scanner = SecretsScanner(threshold=0.5, use_model=True)
+        result = scanner.scan("Please explain the password reset policy.")
+
+        assert result.is_valid
+        assert result.details["model_score"] == 0.2
+
+    def test_local_model_respects_secret_type_filter(self, monkeypatch):
+        monkeypatch.setattr(
+            "sentinelguard.scanners.prompt.secrets.resolve_model",
+            lambda name, mode: self.FakeSecretsModel(score=0.93),
+        )
+
+        scanner = SecretsScanner(
+            threshold=0.5,
+            secret_types=["contextual_password"],
+            use_model=True,
+        )
+        result = scanner.scan("Here are the staging credentials, use banana for login.")
+
+        assert result.is_valid
+        assert result.details["model_score"] == 0.93
 
 
 class TestGibberishScanner:

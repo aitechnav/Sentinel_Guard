@@ -93,6 +93,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--api-key-env", default=None, help="Environment variable for upstream API key"
     )
     gateway_parser.add_argument(
+        "--client-api-key-env",
+        default=None,
+        help="Optional environment variable for authenticating gateway clients",
+    )
+    gateway_parser.add_argument(
         "--enabled", choices=["true", "false"], default=None, help="Enable scanning"
     )
     gateway_parser.add_argument(
@@ -277,6 +282,8 @@ def _handle_gateway(args: argparse.Namespace) -> int:
         gateway_config.upstream_url = args.upstream_url
     if args.api_key_env is not None:
         gateway_config.api_key_env = args.api_key_env
+    if args.client_api_key_env is not None:
+        gateway_config.client_api_key_env = args.client_api_key_env
     if args.enabled is not None:
         gateway_config.enabled = _parse_bool(args.enabled)
     if args.sanitize is not None:
@@ -293,6 +300,7 @@ def _handle_gateway(args: argparse.Namespace) -> int:
     print(f"Provider: {effective_provider(gateway_config)}")
     print(f"Upstream: {effective_upstream_url(gateway_config)}")
     print(f"API key env: {effective_api_key_env(gateway_config)}")
+    print(f"Client auth env: {gateway_config.client_api_key_env or '<disabled>'}")
     print(f"Streaming mode: {gateway_config.streaming_mode}")
 
     uvicorn.run(

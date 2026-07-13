@@ -53,6 +53,11 @@ MODEL_SPECS: Dict[str, ModelSpec] = {
         name="bias",
         model_id="facebook/roberta-hate-speech-dynabench-r4-target",
     ),
+    "secrets": ModelSpec(
+        name="secrets",
+        model_id="valhalla/distilbart-mnli-12-1",
+        task="zero-shot-classification",
+    ),
 }
 
 _MODELS: Dict[str, Any] = {}
