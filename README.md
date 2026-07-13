@@ -53,8 +53,8 @@ print(report.summary())
 pip install sentinelguard
 ```
 
-For model-backed prompt injection, jailbreak, toxicity, and bias scanners,
-install the optional model extra:
+For model-backed prompt injection, jailbreak, secrets, toxicity, and bias
+scanners, install the optional model extra:
 
 ```bash
 pip install "sentinelguard[models]"
@@ -66,6 +66,18 @@ still available immediately through the built-in rules and heuristics; model
 scores are used automatically once the models are ready. The optional models
 can require more than 2 GB of local cache space depending on platform and
 Hugging Face cache state.
+
+The secrets scanner remains hybrid: deterministic detectors catch known API
+keys, tokens, private keys, and explicit password disclosure, while the local
+Hugging Face model adds a second signal for ambiguous credential-sharing
+language. No prompt text is sent to a remote LLM for this model-backed secret
+detection.
+
+```python
+from sentinelguard.scanners.prompt import SecretsScanner
+
+scanner = SecretsScanner(use_model="auto")  # local model when warmed and ready
+```
 
 You can disable background warmup if needed:
 
@@ -114,6 +126,42 @@ export OPENAI_API_KEY="sk-..."
 sentinelguard gateway --provider openai --port 8080
 ```
 
+Or run the gateway as a standalone Docker proxy:
+
+```bash
+docker build -t sentinelguard-gateway .
+
+docker run --rm -p 8080:8080 \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  -e SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token" \
+  sentinelguard-gateway \
+  gateway --provider openai --client-api-key-env SENTINELGUARD_GATEWAY_API_KEY
+```
+
+With Docker Compose:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token"
+docker compose up --build
+```
+
+For local Hugging Face model-backed detection inside the image:
+
+```bash
+SENTINELGUARD_EXTRAS=gateway,monitoring,models docker compose up --build
+```
+
+Kubernetes manifests are available for running the gateway as a cluster service:
+
+```bash
+kubectl apply -k examples/kubernetes
+kubectl -n sentinelguard port-forward svc/sentinelguard-gateway 8080:8080
+```
+
+See `examples/kubernetes/README.md` for image publishing, Secrets, Ingress,
+and IDE/app configuration.
+
 Native provider adapters are also available:
 
 ```bash
@@ -149,6 +197,11 @@ custom provider endpoint to use the gateway:
 http://localhost:8080/v1
 ```
 
+If gateway client auth is enabled, use the configured gateway token as the
+client API key. Multiple apps, users, and AI IDEs can use the same gateway URL
+as long as they route OpenAI-compatible traffic through it. Tools that do not
+support a custom OpenAI-compatible endpoint cannot be intercepted automatically.
+
 When traffic is routed through this URL, SentinelGuard scans prompts before
 they reach the upstream LLM and scans model responses before they are returned.
 Registering SentinelGuard only as an MCP server gives the IDE optional scanning
@@ -167,6 +220,7 @@ gateway:
   provider: openai
   upstream_url: https://api.openai.com/v1
   api_key_env: OPENAI_API_KEY
+  client_api_key_env: SENTINELGUARD_GATEWAY_API_KEY
   default_max_tokens: 1024
   streaming_mode: buffered
   metrics_enabled: true

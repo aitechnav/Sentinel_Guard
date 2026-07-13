@@ -18,6 +18,8 @@ class GatewayConfig:
     upstream_url: str = "https://api.openai.com/v1"
     api_key_env: str = "OPENAI_API_KEY"
     api_key: Optional[str] = None
+    client_api_key_env: Optional[str] = None
+    client_api_key: Optional[str] = None
     forward_authorization: bool = True
     block_on_prompt_fail: bool = True
     block_on_output_fail: bool = True
@@ -58,6 +60,8 @@ class GatewayConfig:
             "upstream_url": self.upstream_url,
             "api_key_env": self.api_key_env,
             "api_key": self.api_key,
+            "client_api_key_env": self.client_api_key_env,
+            "client_api_key": self.client_api_key,
             "forward_authorization": self.forward_authorization,
             "block_on_prompt_fail": self.block_on_prompt_fail,
             "block_on_output_fail": self.block_on_output_fail,

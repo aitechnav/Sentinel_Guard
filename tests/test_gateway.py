@@ -19,6 +19,7 @@ from sentinelguard.gateway.providers import (
     _openai_to_anthropic_payload,
     _openai_to_gemini_payload,
 )
+from sentinelguard.gateway.server import _is_authorized
 
 
 class TestGatewayConfig:
@@ -41,6 +42,7 @@ class TestGatewayConfig:
                     "enabled": False,
                     "provider": "openai-compatible",
                     "upstream_url": "http://localhost:11434/v1",
+                    "client_api_key_env": "SENTINELGUARD_GATEWAY_API_KEY",
                     "sanitize": False,
                     "metrics_enabled": False,
                     "audit_enabled": False,
@@ -51,6 +53,7 @@ class TestGatewayConfig:
         assert config.enabled is False
         assert config.provider == "openai-compatible"
         assert config.upstream_url == "http://localhost:11434/v1"
+        assert config.client_api_key_env == "SENTINELGUARD_GATEWAY_API_KEY"
         assert config.sanitize is False
         assert config.metrics_enabled is False
         assert config.audit_enabled is False
@@ -69,6 +72,26 @@ class TestGatewayConfig:
             == "https://generativelanguage.googleapis.com/v1beta"
         )
         assert effective_api_key_env(gemini) == "GEMINI_API_KEY"
+
+
+class TestGatewayClientAuth:
+    def test_allows_requests_when_client_auth_not_configured(self):
+        assert _is_authorized({}, GatewayConfig())
+
+    def test_rejects_missing_or_wrong_client_key(self, monkeypatch):
+        monkeypatch.setenv("SENTINELGUARD_GATEWAY_API_KEY", "gateway-secret")
+        config = GatewayConfig(client_api_key_env="SENTINELGUARD_GATEWAY_API_KEY")
+
+        assert not _is_authorized({}, config)
+        assert not _is_authorized({"authorization": "Bearer wrong"}, config)
+
+    def test_accepts_bearer_or_api_key_header(self, monkeypatch):
+        monkeypatch.setenv("SENTINELGUARD_GATEWAY_API_KEY", "gateway-secret")
+        config = GatewayConfig(client_api_key_env="SENTINELGUARD_GATEWAY_API_KEY")
+
+        assert _is_authorized({"authorization": "Bearer gateway-secret"}, config)
+        assert _is_authorized({"x-api-key": "gateway-secret"}, config)
+        assert _is_authorized({"x-sentinelguard-api-key": "gateway-secret"}, config)
 
 
 class TestGatewayProviders:

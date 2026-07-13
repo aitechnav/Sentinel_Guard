@@ -1,0 +1,16 @@
+gateway:
+  enabled: true
+  provider: openai
+  upstream_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  client_api_key_env: SENTINELGUARD_GATEWAY_API_KEY
+  forward_authorization: true
+  block_on_prompt_fail: true
+  block_on_output_fail: true
+  sanitize: true
+  timeout_seconds: 60
+  default_max_tokens: 1024
+  streaming_mode: buffered
+  metrics_enabled: true
+  audit_enabled: true
+  audit_hash_salt_env: SENTINELGUARD_AUDIT_SALT

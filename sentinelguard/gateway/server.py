@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Mapping, Optional
 
 from sentinelguard.audit import AuditContext, build_audit_context, log_scan_detections
@@ -83,6 +84,7 @@ def create_gateway_app(
             "streaming_mode": config.streaming_mode,
             "metrics_enabled": config.metrics_enabled,
             "audit_enabled": config.audit_enabled,
+            "client_auth_enabled": bool(_client_api_key(config)),
             "prometheus_available": prometheus_available(),
             "model_status": model_status(),
             "prompt_scanners": guard.prompt_scanner_names,
@@ -105,6 +107,9 @@ def create_gateway_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
+        if not _is_authorized(request.headers, config):
+            return _unauthorized_response()
+
         payload = await request.json()
         _validate_payload(payload)
         audit_context = build_audit_context(
@@ -280,6 +285,49 @@ def _validate_payload(payload: Any) -> None:
         raise HTTPException(status_code=400, detail="OpenAI chat payload requires messages[]")
     if not extract_last_user_text(messages):
         raise HTTPException(status_code=400, detail="No user message text found")
+
+
+def _is_authorized(headers: Mapping[str, str], config: GatewayConfig) -> bool:
+    expected = _client_api_key(config)
+    if not expected:
+        return True
+
+    incoming = {key.lower(): value for key, value in headers.items()}
+    candidates = []
+
+    authorization = incoming.get("authorization")
+    if authorization:
+        candidates.append(authorization)
+        bearer_prefix = "Bearer "
+        if authorization.startswith(bearer_prefix):
+            candidates.append(authorization[len(bearer_prefix):])
+
+    if incoming.get("x-api-key"):
+        candidates.append(incoming["x-api-key"])
+    if incoming.get("x-sentinelguard-api-key"):
+        candidates.append(incoming["x-sentinelguard-api-key"])
+
+    return any(candidate == expected for candidate in candidates)
+
+
+def _client_api_key(config: GatewayConfig) -> Optional[str]:
+    if config.client_api_key:
+        return config.client_api_key
+    if config.client_api_key_env:
+        return os.getenv(config.client_api_key_env)
+    return None
+
+
+def _unauthorized_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": {
+                "message": "SentinelGuard gateway authentication failed",
+                "type": "sentinelguard_gateway_unauthorized",
+            }
+        },
+    )
 
 
 def _blocked_response(

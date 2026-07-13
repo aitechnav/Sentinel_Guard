@@ -58,6 +58,12 @@ def test_auto_resolve_starts_warmup_without_blocking(monkeypatch):
     assert requested == ["toxicity"]
 
 
+def test_model_status_includes_secrets_classifier():
+    status = model_status()["secrets"]
+    assert status["model_id"] == "valhalla/distilbart-mnli-12-1"
+    assert status["status"] == "not_started"
+
+
 def test_sync_resolve_loads_immediately(monkeypatch):
     reset_model_cache()
 
