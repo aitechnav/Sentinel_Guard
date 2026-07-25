@@ -8,8 +8,13 @@ from __future__ import annotations
 import re
 from typing import Any, ClassVar, Dict, List, Optional
 
-from sentinelguard.core.scanner import BaseScanner, ScannerType, RiskLevel, ScanResult, register_scanner
-
+from sentinelguard.core.scanner import (
+    BaseScanner,
+    ScannerType,
+    RiskLevel,
+    ScanResult,
+    register_scanner,
+)
 
 FALLBACK_PII_PATTERNS = {
     "EMAIL_ADDRESS": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
@@ -17,6 +22,46 @@ FALLBACK_PII_PATTERNS = {
     "US_SSN": re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b"),
     "CREDIT_CARD": re.compile(r"\b(?:\d[ -]*?){13,19}\b"),
     "IP_ADDRESS": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+}
+
+TECHNICAL_PERSON_FALSE_POSITIVE_TERMS = {
+    "api",
+    "aws",
+    "cap",
+    "cli",
+    "cpu",
+    "css",
+    "dns",
+    "git",
+    "gpu",
+    "html",
+    "http",
+    "https",
+    "json",
+    "jwt",
+    "llm",
+    "mcp",
+    "sql",
+    "tls",
+    "url",
+    "yaml",
+}
+
+TECHNICAL_QUESTION_HINTS = {
+    "algorithm",
+    "branch",
+    "branching",
+    "code",
+    "computer",
+    "database",
+    "explain",
+    "framework",
+    "git",
+    "programming",
+    "protocol",
+    "software",
+    "system",
+    "theorem",
 }
 
 
@@ -40,13 +85,26 @@ class PIIScanner(BaseScanner):
 
     # Sensitivity weights per entity type for risk scoring
     ENTITY_SENSITIVITY: Dict[str, float] = {
-        "US_SSN": 1.0, "CREDIT_CARD": 1.0, "US_PASSPORT": 0.95,
-        "IBAN_CODE": 0.9, "US_BANK_NUMBER": 0.9, "MEDICAL_LICENSE": 0.9,
-        "US_DRIVER_LICENSE": 0.85, "IN_AADHAAR": 0.85, "IN_PAN": 0.85,
-        "UK_NHS": 0.85, "SG_NRIC_FIN": 0.85, "AU_TFN": 0.85,
-        "CRYPTO": 0.8, "PHONE_NUMBER": 0.7, "EMAIL_ADDRESS": 0.65,
-        "PERSON": 0.6, "LOCATION": 0.55, "DATE_TIME": 0.4,
-        "IP_ADDRESS": 0.4, "URL": 0.3,
+        "US_SSN": 1.0,
+        "CREDIT_CARD": 1.0,
+        "US_PASSPORT": 0.95,
+        "IBAN_CODE": 0.9,
+        "US_BANK_NUMBER": 0.9,
+        "MEDICAL_LICENSE": 0.9,
+        "US_DRIVER_LICENSE": 0.85,
+        "IN_AADHAAR": 0.85,
+        "IN_PAN": 0.85,
+        "UK_NHS": 0.85,
+        "SG_NRIC_FIN": 0.85,
+        "AU_TFN": 0.85,
+        "CRYPTO": 0.8,
+        "PHONE_NUMBER": 0.7,
+        "EMAIL_ADDRESS": 0.65,
+        "PERSON": 0.6,
+        "LOCATION": 0.55,
+        "DATE_TIME": 0.4,
+        "IP_ADDRESS": 0.4,
+        "URL": 0.3,
     }
 
     def __init__(
@@ -71,6 +129,7 @@ class PIIScanner(BaseScanner):
             return self._analyzer
         try:
             from presidio_analyzer import AnalyzerEngine
+
             self._analyzer = AnalyzerEngine()
             self._presidio_available = True
             return self._analyzer
@@ -93,6 +152,7 @@ class PIIScanner(BaseScanner):
         except Exception:
             return self._fallback_scan(text)
 
+        results = self._filter_presidio_results(text, results)
         if not results:
             return ScanResult(
                 is_valid=True,
@@ -123,6 +183,31 @@ class PIIScanner(BaseScanner):
                 "method": "presidio",
             },
         )
+
+    def _filter_presidio_results(self, text: str, results: List[Any]) -> List[Any]:
+        """Suppress narrow Presidio false positives for technical terms."""
+        if len(results) != 1:
+            return results
+
+        result = results[0]
+        if result.entity_type != "PERSON":
+            return results
+
+        span = text[result.start : result.end].strip()
+        if not span:
+            return results
+
+        lower_span = span.lower()
+        lower_text = text.lower()
+        technical_context = any(hint in lower_text for hint in TECHNICAL_QUESTION_HINTS)
+
+        if lower_span in TECHNICAL_PERSON_FALSE_POSITIVE_TERMS and technical_context:
+            return []
+
+        if span.isupper() and len(span) <= 5 and technical_context:
+            return []
+
+        return results
 
     def _fallback_scan(self, text: str) -> ScanResult:
         entities_found: Dict[str, int] = {}

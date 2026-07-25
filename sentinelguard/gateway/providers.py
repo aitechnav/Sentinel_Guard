@@ -17,6 +17,37 @@ OPENAI_DEFAULT_UPSTREAM = "https://api.openai.com/v1"
 ANTHROPIC_DEFAULT_UPSTREAM = "https://api.anthropic.com/v1"
 GEMINI_DEFAULT_UPSTREAM = "https://generativelanguage.googleapis.com/v1beta"
 
+OPENAI_COMPATIBLE_DEFAULTS = {
+    "deepseek": ("https://api.deepseek.com", ["DEEPSEEK_API_KEY", "OPENAI_API_KEY"]),
+    "huggingface": (
+        "https://router.huggingface.co/v1",
+        ["HF_TOKEN", "HUGGINGFACE_API_KEY", "OPENAI_API_KEY"],
+    ),
+    "minimax": ("https://api.minimaxi.com/v1", ["MINIMAX_API_KEY", "OPENAI_API_KEY"]),
+    "mistral": ("https://api.mistral.ai/v1", ["MISTRAL_API_KEY", "OPENAI_API_KEY"]),
+    "ollama": ("http://localhost:11434/v1", ["OLLAMA_API_KEY"]),
+}
+
+PROVIDER_ALIASES = {
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+    "deep-seek": "deepseek",
+    "deepseek": "deepseek",
+    "gemini": "gemini",
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "hf": "huggingface",
+    "hugging-face": "huggingface",
+    "huggingface": "huggingface",
+    "minimax": "minimax",
+    "mini-max": "minimax",
+    "minimaxi": "minimax",
+    "mistral": "mistral",
+    "ollama": "ollama",
+    "openai": "openai",
+    "openai-compatible": "openai-compatible",
+}
+
 _ROUTER_LOCK = threading.Lock()
 _ROUTER_COUNTERS: dict[tuple[int, str], int] = {}
 
@@ -341,11 +372,7 @@ def select_provider_sequence(
 
 def _normalize_provider(provider: str) -> str:
     provider = (provider or "openai").strip().lower().replace("_", "-")
-    if provider in {"anthropic", "claude"}:
-        return "anthropic"
-    if provider in {"gemini", "google", "google-gemini"}:
-        return "gemini"
-    return "openai"
+    return PROVIDER_ALIASES.get(provider, "openai-compatible")
 
 
 def _weighted_rotation(
@@ -407,6 +434,8 @@ def effective_upstream_url(config: GatewayConfig) -> str:
         return ANTHROPIC_DEFAULT_UPSTREAM
     if provider == "gemini" and (not url or url == OPENAI_DEFAULT_UPSTREAM):
         return GEMINI_DEFAULT_UPSTREAM
+    if provider in OPENAI_COMPATIBLE_DEFAULTS and (not url or url == OPENAI_DEFAULT_UPSTREAM):
+        return OPENAI_COMPATIBLE_DEFAULTS[provider][0]
     return url or OPENAI_DEFAULT_UPSTREAM
 
 
@@ -418,6 +447,8 @@ def effective_api_key_env(config: GatewayConfig) -> str:
         return "ANTHROPIC_API_KEY"
     if provider == "gemini" and configured == "OPENAI_API_KEY":
         return "GEMINI_API_KEY"
+    if provider in OPENAI_COMPATIBLE_DEFAULTS and configured == "OPENAI_API_KEY":
+        return OPENAI_COMPATIBLE_DEFAULTS[provider][1][0]
     return configured or "OPENAI_API_KEY"
 
 
@@ -850,6 +881,11 @@ def _api_key_env_names(config: GatewayConfig) -> list:
         if configured and configured != "OPENAI_API_KEY":
             return [configured]
         return ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"]
+
+    if provider in OPENAI_COMPATIBLE_DEFAULTS:
+        if configured and configured != "OPENAI_API_KEY":
+            return [configured]
+        return OPENAI_COMPATIBLE_DEFAULTS[provider][1]
 
     return [configured or "OPENAI_API_KEY"]
 

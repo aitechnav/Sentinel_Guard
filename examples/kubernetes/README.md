@@ -42,11 +42,16 @@ kubectl create secret generic sentinelguard-gateway-secrets \
   --from-literal=SENTINELGUARD_AUDIT_SALT="$(openssl rand -hex 32)"
 ```
 
-For Anthropic or Gemini, add the matching key:
+For Anthropic, Gemini, DeepSeek, Mistral, MiniMax, or Hugging Face, add the
+matching key:
 
 ```bash
 --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY"
+--from-literal=DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
+--from-literal=MISTRAL_API_KEY="$MISTRAL_API_KEY"
+--from-literal=MINIMAX_API_KEY="$MINIMAX_API_KEY"
+--from-literal=HF_TOKEN="$HF_TOKEN"
 ```
 
 You can also copy `secret.example.yaml`, replace the placeholder values, and

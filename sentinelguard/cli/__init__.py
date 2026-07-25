@@ -60,7 +60,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     gateway_parser.add_argument(
         "--provider",
         default=None,
-        help="Gateway provider: openai, anthropic, gemini, or OpenAI-compatible",
+        help=(
+            "Gateway provider: openai, anthropic, gemini, deepseek, mistral, "
+            "minimax, ollama, huggingface, or openai-compatible"
+        ),
     )
     gateway_parser.add_argument(
         "--upstream-url", default=None, help="OpenAI-compatible upstream base URL"

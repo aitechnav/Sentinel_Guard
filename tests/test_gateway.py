@@ -21,6 +21,7 @@ from sentinelguard.gateway.providers import (
     _anthropic_to_openai_response,
     _build_anthropic_headers,
     _build_gemini_headers,
+    _build_openai_headers,
     _gemini_to_openai_response,
     _openai_to_anthropic_payload,
     _openai_to_gemini_payload,
@@ -106,6 +107,36 @@ class TestGatewayConfig:
         assert effective_provider(gemini) == "gemini"
         assert effective_upstream_url(gemini) == "https://generativelanguage.googleapis.com/v1beta"
         assert effective_api_key_env(gemini) == "GEMINI_API_KEY"
+
+        deepseek = GatewayConfig(provider="deepseek")
+        assert effective_provider(deepseek) == "deepseek"
+        assert effective_upstream_url(deepseek) == "https://api.deepseek.com"
+        assert effective_api_key_env(deepseek) == "DEEPSEEK_API_KEY"
+
+        mistral = GatewayConfig(provider="mistral")
+        assert effective_provider(mistral) == "mistral"
+        assert effective_upstream_url(mistral) == "https://api.mistral.ai/v1"
+        assert effective_api_key_env(mistral) == "MISTRAL_API_KEY"
+
+        minimax = GatewayConfig(provider="minimax")
+        assert effective_provider(minimax) == "minimax"
+        assert effective_upstream_url(minimax) == "https://api.minimaxi.com/v1"
+        assert effective_api_key_env(minimax) == "MINIMAX_API_KEY"
+
+        ollama = GatewayConfig(provider="ollama")
+        assert effective_provider(ollama) == "ollama"
+        assert effective_upstream_url(ollama) == "http://localhost:11434/v1"
+        assert effective_api_key_env(ollama) == "OLLAMA_API_KEY"
+
+        huggingface = GatewayConfig(provider="huggingface")
+        assert effective_provider(huggingface) == "huggingface"
+        assert effective_upstream_url(huggingface) == "https://router.huggingface.co/v1"
+        assert effective_api_key_env(huggingface) == "HF_TOKEN"
+
+        custom = GatewayConfig(provider="my-openai-compatible-api")
+        assert effective_provider(custom) == "openai-compatible"
+        assert effective_upstream_url(custom) == "https://api.openai.com/v1"
+        assert effective_api_key_env(custom) == "OPENAI_API_KEY"
 
 
 class TestGatewayClientAuth:
@@ -425,6 +456,22 @@ class TestNativeProviderAdapters:
         headers = _build_gemini_headers({}, GatewayConfig(provider="gemini"))
 
         assert headers["x-goog-api-key"] == "gemini-key"
+
+    def test_openai_compatible_aliases_use_provider_specific_auth(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+        headers = _build_openai_headers({}, GatewayConfig(provider="deepseek"))
+
+        assert headers["authorization"] == "Bearer deepseek-key"
+
+    def test_ollama_does_not_forward_openai_key_by_default(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+        headers = _build_openai_headers({}, GatewayConfig(provider="ollama"))
+
+        assert "authorization" not in headers
 
 
 def _decode_sse(event: str) -> dict:

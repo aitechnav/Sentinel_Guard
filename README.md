@@ -174,6 +174,30 @@ export GEMINI_API_KEY="..."
 sentinelguard gateway --provider gemini --port 8080
 ```
 
+OpenAI-compatible providers can use the same gateway API shape. SentinelGuard
+has named defaults for common providers:
+
+```bash
+# DeepSeek
+export DEEPSEEK_API_KEY="..."
+sentinelguard gateway --provider deepseek --port 8080
+
+# Mistral
+export MISTRAL_API_KEY="..."
+sentinelguard gateway --provider mistral --port 8080
+
+# MiniMax
+export MINIMAX_API_KEY="..."
+sentinelguard gateway --provider minimax --port 8080
+
+# Ollama local runtime
+sentinelguard gateway --provider ollama --port 8080
+
+# Hugging Face Inference Providers router
+export HF_TOKEN="..."
+sentinelguard gateway --provider huggingface --port 8080
+```
+
 Then point an OpenAI-compatible client at the gateway:
 
 ```python
@@ -255,8 +279,23 @@ Provider defaults:
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `anthropic` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
 | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
+| `deepseek` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
+| `mistral` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
+| `minimax` | `https://api.minimaxi.com/v1` | `MINIMAX_API_KEY` |
+| `ollama` | `http://localhost:11434/v1` | `OLLAMA_API_KEY` optional |
+| `huggingface` | `https://router.huggingface.co/v1` | `HF_TOKEN` |
 
 Gemini also checks `GOOGLE_API_KEY` when `GEMINI_API_KEY` is not set.
+For custom OpenAI-compatible servers such as vLLM, TGI, llama.cpp servers, or
+private model gateways, set `provider: openai-compatible` and provide
+`upstream_url`.
+
+Local Hugging Face model-backed detection is separate from upstream LLM routing.
+Install `sentinelguard[models]` to let SentinelGuard use local Hugging Face
+classifiers for detection. To route application traffic to a local Hugging Face
+LLM, run that model behind an OpenAI-compatible server such as vLLM, TGI, or
+llama.cpp and configure its `upstream_url`. Ollama already exposes a local
+OpenAI-compatible API at `http://localhost:11434/v1`.
 
 For multi-provider deployments, define a provider pool. Providers with lower
 priority values are attempted first; providers with the same priority use a
@@ -272,9 +311,8 @@ gateway:
   route_pii_to_private_provider: true
   providers:
     - name: private-ollama
-      provider: openai-compatible
+      provider: ollama
       upstream_url: http://ollama:11434/v1
-      api_key_env: OLLAMA_API_KEY
       private: true
       priority: 1
       weight: 1
@@ -290,6 +328,12 @@ gateway:
       api_key_env: ANTHROPIC_API_KEY
       private: false
       priority: 20
+      weight: 1
+    - name: backup-mistral
+      provider: mistral
+      api_key_env: MISTRAL_API_KEY
+      private: false
+      priority: 30
       weight: 1
 ```
 
@@ -389,6 +433,17 @@ Add new rows for prompt attacks, secrets, PII/PCI/PHI, output leakage, benign
 negatives, multilingual cases, encoded attacks, and domain-specific examples.
 Use this benchmark to tune scanner thresholds before claiming detection
 accuracy.
+
+To download public benchmark samples outside the repository and run a broader
+input-scanner evaluation:
+
+```bash
+python benchmarks/external_security.py --run
+```
+
+This pulls public prompt-injection samples from Zachz and Meta CyberSecEval,
+synthetic PII samples from Ai4Privacy, and synthetic fake-secret cases into
+`/private/tmp/sentinelguard_external_benchmarks` by default.
 
 Recommended implementation approach for future security work:
 

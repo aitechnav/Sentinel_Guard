@@ -18,7 +18,13 @@ import math
 import re
 from typing import Any, ClassVar, Dict, List, Optional, Union
 
-from sentinelguard.core.scanner import BaseScanner, ScannerType, RiskLevel, ScanResult, register_scanner
+from sentinelguard.core.scanner import (
+    BaseScanner,
+    ScannerType,
+    RiskLevel,
+    ScanResult,
+    register_scanner,
+)
 from sentinelguard.models import resolve_model
 
 logger = logging.getLogger(__name__)
@@ -81,8 +87,7 @@ KEYWORD_PATTERNS = {
 #   "my password hunter2!"
 #   "admin password @@!E@#@#"
 #   "api token is !@ASASD"
-CONTEXTUAL_SECRET_PATTERN = re.compile(
-    r"""(?ix)
+CONTEXTUAL_SECRET_PATTERN = re.compile(r"""(?ix)
     \b(?P<label>
         (?:admin|database|db|root|service|app|client|api|auth|access|refresh|session|bearer)?[\s_-]*
         (?:password|passwd|pwd|passphrase|api[\s_-]?key|api[\s_-]?token|access[\s_-]?key|
@@ -102,8 +107,7 @@ CONTEXTUAL_SECRET_PATTERN = re.compile(
         `[^`\r\n]{4,}` |
         [^"'`\s,;]{4,}
     )
-    """
-)
+    """)
 
 _SECRETS_MODEL_ID = "valhalla/distilbart-mnli-12-1"
 
@@ -116,22 +120,43 @@ MODEL_SECRET_LABELS = [
 
 # Sensitivity tiers
 HIGH_SENSITIVITY = {
-    "aws_access_key", "aws_secret_key", "private_key",
-    "connection_string", "stripe_key", "azure_key",
-    "generic_password", "generic_secret",
-    "encryption_key", "contextual_password", "contextual_secret",
+    "aws_access_key",
+    "aws_secret_key",
+    "private_key",
+    "connection_string",
+    "stripe_key",
+    "azure_key",
+    "generic_password",
+    "generic_secret",
+    "encryption_key",
+    "contextual_password",
+    "contextual_secret",
     "model_contextual_secret",
 }
 MEDIUM_SENSITIVITY = {
-    "github_token", "github_fine_grained", "openai_api_key",
-    "anthropic_api_key", "slack_token", "jwt_token", "ssh_public_key",
-    "sendgrid_api_key", "twilio_api_key", "mailgun_api_key",
-    "google_api_key", "bearer_header", "generic_api_key",
-    "generic_token", "generic_credential", "contextual_api_key",
-    "contextual_token", "contextual_credential",
+    "github_token",
+    "github_fine_grained",
+    "openai_api_key",
+    "anthropic_api_key",
+    "slack_token",
+    "jwt_token",
+    "ssh_public_key",
+    "sendgrid_api_key",
+    "twilio_api_key",
+    "mailgun_api_key",
+    "google_api_key",
+    "bearer_header",
+    "generic_api_key",
+    "generic_token",
+    "generic_credential",
+    "contextual_api_key",
+    "contextual_token",
+    "contextual_credential",
 }
 LOW_SENSITIVITY = {
-    "generic_username", "high_entropy_hex", "high_entropy_base64",
+    "generic_username",
+    "high_entropy_hex",
+    "high_entropy_base64",
 }
 
 
@@ -163,17 +188,60 @@ _ENTROPY_EXCLUDE = re.compile(
 )
 
 _CONTEXTUAL_PLACEHOLDER_VALUES = {
-    "hidden", "masked", "none", "null", "redacted", "unknown",
+    "hidden",
+    "masked",
+    "none",
+    "null",
+    "redacted",
+    "unknown",
 }
 
 _CONTEXTUAL_SAFE_VALUES = {
-    "again", "best", "can", "change", "changed", "check", "create",
-    "debug", "default", "does", "doesnt", "doesn't", "example", "expired",
-    "expires", "field", "forgot", "help", "invalid", "issue",
-    "limit", "login", "manager", "must", "not",
-    "please", "policy", "prompt", "requirements", "reset",
-    "rotate", "rotated", "rotation", "rules", "secret", "should", "token",
-    "true", "false", "value", "work", "working", "wrong",
+    "again",
+    "appears",
+    "best",
+    "can",
+    "change",
+    "changed",
+    "check",
+    "create",
+    "debug",
+    "default",
+    "does",
+    "doesnt",
+    "doesn't",
+    "example",
+    "expired",
+    "expires",
+    "field",
+    "forgot",
+    "help",
+    "invalid",
+    "issue",
+    "limit",
+    "login",
+    "manager",
+    "must",
+    "not",
+    "please",
+    "policy",
+    "present",
+    "prompt",
+    "requirements",
+    "reset",
+    "rotate",
+    "rotated",
+    "rotation",
+    "rules",
+    "secret",
+    "should",
+    "token",
+    "true",
+    "false",
+    "value",
+    "work",
+    "working",
+    "wrong",
 }
 
 _CONTEXTUAL_TRAILING_PUNCT = ".,;:!?)]}"
@@ -190,6 +258,17 @@ def _normalize_contextual_value(value: str) -> str:
     """Strip wrappers and sentence punctuation from a contextual value."""
     value = value.strip().strip("\"'`")
     return value.rstrip(_CONTEXTUAL_TRAILING_PUNCT)
+
+
+def _is_safe_secret_value(value: str) -> bool:
+    """Return True for benign words/placeholders commonly found near secret terms."""
+    value = _normalize_contextual_value(value)
+    lower = value.lower()
+    return (
+        lower in _CONTEXTUAL_PLACEHOLDER_VALUES
+        or lower in _CONTEXTUAL_SAFE_VALUES
+        or bool(re.fullmatch(r"<[^>]+>", value))
+    )
 
 
 def _contextual_secret_type(label: str) -> str:
@@ -216,14 +295,7 @@ def _looks_like_contextual_secret(label: str, value: str, has_connector: bool = 
     if len(value) < 4:
         return False
 
-    lower = value.lower()
-    if lower in _CONTEXTUAL_PLACEHOLDER_VALUES:
-        return False
-
-    if lower in _CONTEXTUAL_SAFE_VALUES and not has_connector:
-        return False
-
-    if re.fullmatch(r"<[^>]+>", value):
+    if _is_safe_secret_value(value) and not has_connector:
         return False
 
     has_letter = any(c.isalpha() for c in value)
@@ -250,7 +322,7 @@ def _sanitize_text(text: str, matches: List[Dict[str, Any]]) -> str:
     sanitized = text
     for match in sorted(matches, key=lambda m: m["start"], reverse=True):
         replacement = f"<SECRET:{match['type']}>"
-        sanitized = sanitized[:match["start"]] + replacement + sanitized[match["end"]:]
+        sanitized = sanitized[: match["start"]] + replacement + sanitized[match["end"] :]
     return sanitized
 
 
@@ -324,30 +396,34 @@ class SecretsScanner(BaseScanner):
 
         try:
             secrets = SecretsCollection()
-            with transient_settings({"plugins_used": [
-                {"name": "ArtifactoryDetector"},
-                {"name": "AWSKeyDetector"},
-                {"name": "AzureStorageKeyDetector"},
-                {"name": "BasicAuthDetector"},
-                {"name": "CloudantDetector"},
-                {"name": "DiscordBotTokenDetector"},
-                {"name": "GitHubTokenDetector"},
-                {"name": "IbmCloudIamDetector"},
-                {"name": "IbmCosHmacDetector"},
-                {"name": "JwtTokenDetector"},
-                {"name": "KeywordDetector"},
-                {"name": "MailchimpDetector"},
-                {"name": "NpmDetector"},
-                {"name": "PrivateKeyDetector"},
-                {"name": "SendGridDetector"},
-                {"name": "SlackDetector"},
-                {"name": "SoftlayerDetector"},
-                {"name": "SquareOAuthDetector"},
-                {"name": "StripeDetector"},
-                {"name": "TwilioKeyDetector"},
-                {"name": "Base64HighEntropyString", "limit": 4.5},
-                {"name": "HexHighEntropyString", "limit": 3.0},
-            ]}):
+            with transient_settings(
+                {
+                    "plugins_used": [
+                        {"name": "ArtifactoryDetector"},
+                        {"name": "AWSKeyDetector"},
+                        {"name": "AzureStorageKeyDetector"},
+                        {"name": "BasicAuthDetector"},
+                        {"name": "CloudantDetector"},
+                        {"name": "DiscordBotTokenDetector"},
+                        {"name": "GitHubTokenDetector"},
+                        {"name": "IbmCloudIamDetector"},
+                        {"name": "IbmCosHmacDetector"},
+                        {"name": "JwtTokenDetector"},
+                        {"name": "KeywordDetector"},
+                        {"name": "MailchimpDetector"},
+                        {"name": "NpmDetector"},
+                        {"name": "PrivateKeyDetector"},
+                        {"name": "SendGridDetector"},
+                        {"name": "SlackDetector"},
+                        {"name": "SoftlayerDetector"},
+                        {"name": "SquareOAuthDetector"},
+                        {"name": "StripeDetector"},
+                        {"name": "TwilioKeyDetector"},
+                        {"name": "Base64HighEntropyString", "limit": 4.5},
+                        {"name": "HexHighEntropyString", "limit": 3.0},
+                    ]
+                }
+            ):
                 secrets.scan_file(str(temp_file.name))
 
             for file in secrets.files:
@@ -366,12 +442,14 @@ class SecretsScanner(BaseScanner):
                         val_start = text.index(secret_val)
                     except ValueError:
                         continue
-                    matches.append({
-                        "type": secret_type,
-                        "start": val_start,
-                        "end": val_start + len(secret_val),
-                        "text": secret_val,
-                    })
+                    matches.append(
+                        {
+                            "type": secret_type,
+                            "start": val_start,
+                            "end": val_start + len(secret_val),
+                            "text": secret_val,
+                        }
+                    )
         finally:
             os.remove(temp_file.name)
 
@@ -396,18 +474,19 @@ class SecretsScanner(BaseScanner):
                 # Avoid duplicates with detect-secrets findings
                 match_text = match.group(0)
                 already_found = any(
-                    m["text"] == match_text or
-                    (m["start"] <= match.start() < m["end"])
+                    m["text"] == match_text or (m["start"] <= match.start() < m["end"])
                     for m in secret_matches
                 )
                 if not already_found:
                     found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
-                    secret_matches.append({
-                        "type": secret_type,
-                        "start": match.start(),
-                        "end": match.end(),
-                        "text": match.group(0),
-                    })
+                    secret_matches.append(
+                        {
+                            "type": secret_type,
+                            "start": match.start(),
+                            "end": match.end(),
+                            "text": match.group(0),
+                        }
+                    )
 
         # Method 3: Generic keyword patterns (supplement)
         for secret_type, pattern in KEYWORD_PATTERNS.items():
@@ -415,25 +494,32 @@ class SecretsScanner(BaseScanner):
                 continue
             for match in pattern.finditer(text):
                 try:
-                    value = match.group(2) if match.lastindex and match.lastindex >= 2 else match.group(1)
+                    value = (
+                        match.group(2)
+                        if match.lastindex and match.lastindex >= 2
+                        else match.group(1)
+                    )
                     val_start = match.start() + match.group(0).index(value)
                 except (IndexError, ValueError):
                     value = match.group(0)
                     val_start = match.start()
+                if _is_safe_secret_value(value):
+                    continue
                 # Avoid duplicates
                 already_found = any(
-                    m["text"] == value or
-                    (m["start"] <= val_start < m["end"])
+                    m["text"] == value or (m["start"] <= val_start < m["end"])
                     for m in secret_matches
                 )
                 if not already_found:
                     found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
-                    secret_matches.append({
-                        "type": secret_type,
-                        "start": val_start,
-                        "end": val_start + len(value),
-                        "text": value,
-                    })
+                    secret_matches.append(
+                        {
+                            "type": secret_type,
+                            "start": val_start,
+                            "end": val_start + len(value),
+                            "text": value,
+                        }
+                    )
 
         # Method 4: Contextual credential disclosure inference
         for match in CONTEXTUAL_SECRET_PATTERN.finditer(text):
@@ -451,18 +537,18 @@ class SecretsScanner(BaseScanner):
             val_start += leading_trim
             val_end = val_start + len(value)
             already_found = any(
-                m["text"] == value or
-                (m["start"] <= val_start < m["end"])
-                for m in secret_matches
+                m["text"] == value or (m["start"] <= val_start < m["end"]) for m in secret_matches
             )
             if not already_found:
                 found_secrets[secret_type] = found_secrets.get(secret_type, 0) + 1
-                secret_matches.append({
-                    "type": secret_type,
-                    "start": val_start,
-                    "end": val_end,
-                    "text": value,
-                })
+                secret_matches.append(
+                    {
+                        "type": secret_type,
+                        "start": val_start,
+                        "end": val_end,
+                        "text": value,
+                    }
+                )
 
         # Method 5: High-entropy string detection
         if self.detect_entropy:
@@ -472,25 +558,31 @@ class SecretsScanner(BaseScanner):
                     continue
                 if _shannon_entropy(candidate) > HEX_ENTROPY_THRESHOLD:
                     found_secrets["high_entropy_hex"] = found_secrets.get("high_entropy_hex", 0) + 1
-                    secret_matches.append({
-                        "type": "high_entropy_hex",
-                        "start": match.start(1),
-                        "end": match.end(1),
-                        "text": candidate,
-                    })
+                    secret_matches.append(
+                        {
+                            "type": "high_entropy_hex",
+                            "start": match.start(1),
+                            "end": match.end(1),
+                            "text": candidate,
+                        }
+                    )
 
             for match in _BASE64_CANDIDATE.finditer(text):
                 candidate = match.group(1)
                 if _ENTROPY_EXCLUDE.match(candidate):
                     continue
                 if len(candidate) >= 20 and _shannon_entropy(candidate) > BASE64_ENTROPY_THRESHOLD:
-                    found_secrets["high_entropy_base64"] = found_secrets.get("high_entropy_base64", 0) + 1
-                    secret_matches.append({
-                        "type": "high_entropy_base64",
-                        "start": match.start(1),
-                        "end": match.end(1),
-                        "text": candidate,
-                    })
+                    found_secrets["high_entropy_base64"] = (
+                        found_secrets.get("high_entropy_base64", 0) + 1
+                    )
+                    secret_matches.append(
+                        {
+                            "type": "high_entropy_base64",
+                            "start": match.start(1),
+                            "end": match.end(1),
+                            "text": candidate,
+                        }
+                    )
 
         # Method 6: Optional local zero-shot model for ambiguous disclosure context
         if (
@@ -570,10 +662,7 @@ class SecretsScanner(BaseScanner):
             )
             labels = result.get("labels", [])
             scores = result.get("scores", [])
-            label_scores = {
-                str(label): float(score)
-                for label, score in zip(labels, scores)
-            }
+            label_scores = {str(label): float(score) for label, score in zip(labels, scores)}
             return (max(label_scores.values()) if label_scores else 0.0), label_scores
         except Exception as exc:
             logger.warning("Secrets model inference failed: %s", exc)

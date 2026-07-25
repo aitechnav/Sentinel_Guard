@@ -182,6 +182,25 @@ sentinelguard gateway --provider anthropic --port 8080
 # Gemini
 export GEMINI_API_KEY="..."
 sentinelguard gateway --provider gemini --port 8080
+
+# DeepSeek
+export DEEPSEEK_API_KEY="..."
+sentinelguard gateway --provider deepseek --port 8080
+
+# Mistral
+export MISTRAL_API_KEY="..."
+sentinelguard gateway --provider mistral --port 8080
+
+# MiniMax
+export MINIMAX_API_KEY="..."
+sentinelguard gateway --provider minimax --port 8080
+
+# Ollama local runtime
+sentinelguard gateway --provider ollama --port 8080
+
+# Hugging Face Inference Providers router
+export HF_TOKEN="..."
+sentinelguard gateway --provider huggingface --port 8080
 ```
 
 ---
