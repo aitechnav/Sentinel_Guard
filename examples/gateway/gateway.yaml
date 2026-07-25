@@ -8,9 +8,30 @@ gateway:
   block_on_prompt_fail: true
   block_on_output_fail: true
   sanitize: true
+  redact_pii: true
+  redact_output_pii: true
+  route_pii_to_private_provider: false
+  fallback_enabled: true
+  failover_status_codes:
+    - 408
+    - 409
+    - 425
+    - 429
+    - 500
+    - 502
+    - 503
+    - 504
   timeout_seconds: 60
   default_max_tokens: 1024
   streaming_mode: buffered
   metrics_enabled: true
   audit_enabled: true
   audit_hash_salt_env: SENTINELGUARD_AUDIT_SALT
+  providers:
+    - name: primary-openai
+      provider: openai
+      upstream_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      private: false
+      priority: 10
+      weight: 1

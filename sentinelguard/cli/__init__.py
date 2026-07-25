@@ -28,59 +28,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         prog="sentinelguard",
         description="SentinelGuard - LLM Security & Guardrails Framework",
     )
-    parser.add_argument(
-        "--version", action="store_true", help="Show version"
-    )
+    parser.add_argument("--version", action="store_true", help="Show version")
 
     subparsers = parser.add_subparsers(dest="command")
 
     # ── scan command ──
     scan_parser = subparsers.add_parser("scan", help="Scan text for security issues")
-    scan_parser.add_argument(
-        "type", choices=["prompt", "output"], help="Type of scan"
-    )
+    scan_parser.add_argument("type", choices=["prompt", "output"], help="Type of scan")
     scan_parser.add_argument("text", help="Text to scan")
-    scan_parser.add_argument(
-        "--config", type=str, help="Path to config YAML file"
-    )
+    scan_parser.add_argument("--config", type=str, help="Path to config YAML file")
     scan_parser.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
-    scan_parser.add_argument(
-        "--threshold", type=float, help="Override threshold"
-    )
+    scan_parser.add_argument("--threshold", type=float, help="Override threshold")
 
     # ── serve command ──
     serve_parser = subparsers.add_parser("serve", help="Start API server")
-    serve_parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to bind to"
-    )
-    serve_parser.add_argument(
-        "--port", type=int, default=8000, help="Port to listen on"
-    )
-    serve_parser.add_argument(
-        "--config", type=str, help="Path to config YAML file"
-    )
-    serve_parser.add_argument(
-        "--reload", action="store_true", help="Enable auto-reload"
-    )
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    serve_parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
+    serve_parser.add_argument("--config", type=str, help="Path to config YAML file")
+    serve_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
 
     # ── gateway command ──
-    gateway_parser = subparsers.add_parser(
-        "gateway", help="Start OpenAI-compatible LLM gateway"
-    )
-    gateway_parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to bind to"
-    )
-    gateway_parser.add_argument(
-        "--port", type=int, default=8080, help="Port to listen on"
-    )
+    gateway_parser = subparsers.add_parser("gateway", help="Start OpenAI-compatible LLM gateway")
+    gateway_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    gateway_parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
     gateway_parser.add_argument(
         "--config", type=str, help="Path to SentinelGuard scanner config YAML"
     )
-    gateway_parser.add_argument(
-        "--gateway-config", type=str, help="Path to gateway config YAML"
-    )
+    gateway_parser.add_argument("--gateway-config", type=str, help="Path to gateway config YAML")
     gateway_parser.add_argument(
         "--provider",
         default=None,
@@ -103,9 +79,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     gateway_parser.add_argument(
         "--sanitize", choices=["true", "false"], default=None, help="Forward sanitized text"
     )
-    gateway_parser.add_argument(
-        "--reload", action="store_true", help="Enable auto-reload"
-    )
+    gateway_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
 
     # ── config command ──
     config_parser = subparsers.add_parser("config", help="Manage configuration")
@@ -124,14 +98,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ── scanners command ──
     scanners_parser = subparsers.add_parser("scanners", help="List scanners")
-    scanners_parser.add_argument(
-        "action", choices=["list"], help="Action to perform"
-    )
+    scanners_parser.add_argument("action", choices=["list"], help="Action to perform")
 
     args = parser.parse_args(argv)
 
     if args.version:
         from sentinelguard import __version__
+
         print(f"sentinelguard {__version__}")
         return 0
 
@@ -238,6 +211,7 @@ def _handle_serve(args: argparse.Namespace) -> int:
         config = GuardConfig.from_yaml(args.config)
 
     from sentinelguard.api.server import create_app
+
     app = create_app(config)
 
     print(f"Starting SentinelGuard API server on {args.host}:{args.port}")
@@ -263,6 +237,7 @@ def _handle_gateway(args: argparse.Namespace) -> int:
     from sentinelguard.core.config import GuardConfig
     from sentinelguard.gateway.config import GatewayConfig
     from sentinelguard.gateway.providers import (
+        configured_providers,
         effective_api_key_env,
         effective_provider,
         effective_upstream_url,
@@ -271,9 +246,7 @@ def _handle_gateway(args: argparse.Namespace) -> int:
 
     guard_config = GuardConfig.from_yaml(args.config) if args.config else None
     gateway_config = (
-        GatewayConfig.from_yaml(args.gateway_config)
-        if args.gateway_config
-        else GatewayConfig()
+        GatewayConfig.from_yaml(args.gateway_config) if args.gateway_config else GatewayConfig()
     )
 
     if args.provider is not None:
@@ -299,6 +272,11 @@ def _handle_gateway(args: argparse.Namespace) -> int:
     print(f"Gateway mode: {mode}")
     print(f"Provider: {effective_provider(gateway_config)}")
     print(f"Upstream: {effective_upstream_url(gateway_config)}")
+    if gateway_config.providers:
+        provider_names = ", ".join(
+            provider.name for provider in configured_providers(gateway_config)
+        )
+        print(f"Provider pool: {provider_names}")
     print(f"API key env: {effective_api_key_env(gateway_config)}")
     print(f"Client auth env: {gateway_config.client_api_key_env or '<disabled>'}")
     print(f"Streaming mode: {gateway_config.streaming_mode}")

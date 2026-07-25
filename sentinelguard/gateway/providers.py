@@ -5,14 +5,49 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import time
+from dataclasses import dataclass, replace
+from itertools import groupby
 from typing import Any, Iterator, Mapping, Optional, Tuple
 
-from sentinelguard.gateway.config import GatewayConfig
+from sentinelguard.gateway.config import GatewayConfig, ProviderConfig
 
 OPENAI_DEFAULT_UPSTREAM = "https://api.openai.com/v1"
 ANTHROPIC_DEFAULT_UPSTREAM = "https://api.anthropic.com/v1"
 GEMINI_DEFAULT_UPSTREAM = "https://generativelanguage.googleapis.com/v1beta"
+
+_ROUTER_LOCK = threading.Lock()
+_ROUTER_COUNTERS: dict[tuple[int, str], int] = {}
+
+
+@dataclass(frozen=True)
+class ProviderAttempt:
+    """One provider attempt made by the gateway router."""
+
+    name: str
+    provider: str
+    status_code: Optional[int] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "provider": self.provider,
+            "status_code": self.status_code,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class ForwardResult:
+    """Provider forwarding result with routing metadata."""
+
+    status_code: int
+    body: dict
+    provider_name: str
+    provider: str
+    attempts: tuple[ProviderAttempt, ...] = ()
 
 
 def extract_last_user_text(messages: list) -> str:
@@ -137,6 +172,110 @@ async def forward_chat_completion(
     config: GatewayConfig,
 ) -> Tuple[int, dict]:
     """Forward a chat completion request to the configured upstream provider."""
+    return await _forward_chat_completion_single(payload, incoming_headers, config)
+
+
+async def forward_chat_completion_with_failover(
+    payload: Mapping[str, Any],
+    incoming_headers: Mapping[str, str],
+    config: GatewayConfig,
+    *,
+    route_constraint: str = "any",
+) -> ForwardResult:
+    """Forward a chat completion request using provider-pool failover.
+
+    Only provider or network failures are eligible for failover. Policy blocks
+    happen before this function is called, so blocked prompts are never retried
+    against another provider.
+    """
+    candidates = select_provider_sequence(config, route_constraint=route_constraint)
+    if not candidates:
+        body = {
+            "error": {
+                "message": "No eligible upstream provider for SentinelGuard route",
+                "type": "sentinelguard_no_eligible_provider",
+                "route_constraint": route_constraint,
+            }
+        }
+        return ForwardResult(
+            status_code=503,
+            body=body,
+            provider_name="none",
+            provider="none",
+            attempts=(),
+        )
+
+    attempts: list[ProviderAttempt] = []
+    last_body: dict = {}
+    last_status = 502
+
+    for candidate in candidates:
+        candidate_config = _gateway_config_for_provider(config, candidate)
+        provider = effective_provider(candidate_config)
+        try:
+            status_code, body = await _forward_chat_completion_single(
+                payload,
+                incoming_headers,
+                candidate_config,
+            )
+        except Exception as exc:
+            attempts.append(
+                ProviderAttempt(
+                    name=candidate.name,
+                    provider=provider,
+                    error=exc.__class__.__name__,
+                )
+            )
+            last_status = 502
+            last_body = {
+                "error": {
+                    "message": str(exc),
+                    "type": "sentinelguard_upstream_exception",
+                }
+            }
+            if not config.fallback_enabled:
+                break
+            continue
+
+        attempts.append(
+            ProviderAttempt(
+                name=candidate.name,
+                provider=provider,
+                status_code=status_code,
+            )
+        )
+        if (
+            status_code < 400
+            or not config.fallback_enabled
+            or not _is_failover_status(status_code, config)
+        ):
+            return ForwardResult(
+                status_code=status_code,
+                body=body,
+                provider_name=candidate.name,
+                provider=provider,
+                attempts=tuple(attempts),
+            )
+
+        last_status = status_code
+        last_body = body
+
+    last_attempt = attempts[-1] if attempts else None
+    return ForwardResult(
+        status_code=last_status,
+        body=last_body,
+        provider_name=last_attempt.name if last_attempt else "none",
+        provider=last_attempt.provider if last_attempt else "none",
+        attempts=tuple(attempts),
+    )
+
+
+async def _forward_chat_completion_single(
+    payload: Mapping[str, Any],
+    incoming_headers: Mapping[str, str],
+    config: GatewayConfig,
+) -> Tuple[int, dict]:
+    """Forward a chat completion request to one configured provider."""
     httpx = _load_httpx()
     provider = effective_provider(config)
 
@@ -149,12 +288,114 @@ async def forward_chat_completion(
 
 def effective_provider(config: GatewayConfig) -> str:
     """Return the adapter provider name used by the gateway."""
-    provider = (config.provider or "openai").strip().lower().replace("_", "-")
+    return _normalize_provider(config.provider)
+
+
+def configured_providers(config: GatewayConfig) -> list[ProviderConfig]:
+    """Return configured provider candidates, preserving single-provider compatibility."""
+    if config.providers:
+        return [provider for provider in config.providers if provider.enabled]
+    return [
+        ProviderConfig(
+            name=effective_provider(config),
+            provider=config.provider,
+            upstream_url=config.upstream_url,
+            api_key_env=config.api_key_env,
+            api_key=config.api_key,
+            enabled=True,
+            private=False,
+            priority=100,
+            weight=1,
+            timeout_seconds=config.timeout_seconds,
+        )
+    ]
+
+
+def select_provider_sequence(
+    config: GatewayConfig,
+    *,
+    route_constraint: str = "any",
+) -> list[ProviderConfig]:
+    """Return ordered provider attempts for one request.
+
+    Providers are sorted by priority, and providers with the same priority use
+    a small weighted rotation for the first attempt while preserving a unique
+    fallback sequence.
+    """
+    providers = configured_providers(config)
+    if route_constraint == "private":
+        providers = [provider for provider in providers if provider.private]
+    if not providers:
+        return []
+
+    ordered: list[ProviderConfig] = []
+    sorted_providers = sorted(
+        providers,
+        key=lambda provider: (int(provider.priority), provider.name),
+    )
+    for _priority, group_iter in groupby(sorted_providers, key=lambda p: int(p.priority)):
+        group = list(group_iter)
+        ordered.extend(_weighted_rotation(group, route_constraint))
+    return ordered
+
+
+def _normalize_provider(provider: str) -> str:
+    provider = (provider or "openai").strip().lower().replace("_", "-")
     if provider in {"anthropic", "claude"}:
         return "anthropic"
     if provider in {"gemini", "google", "google-gemini"}:
         return "gemini"
     return "openai"
+
+
+def _weighted_rotation(
+    providers: list[ProviderConfig],
+    route_constraint: str,
+) -> list[ProviderConfig]:
+    expanded: list[ProviderConfig] = []
+    for provider in providers:
+        weight = max(1, min(100, int(provider.weight or 1)))
+        expanded.extend([provider] * weight)
+    if not expanded:
+        return providers
+
+    key = (hash(tuple(provider.name for provider in providers)), route_constraint)
+    with _ROUTER_LOCK:
+        counter = _ROUTER_COUNTERS.get(key, 0)
+        _ROUTER_COUNTERS[key] = counter + 1
+
+    rotated = expanded[counter % len(expanded) :] + expanded[: counter % len(expanded)]
+    unique: list[ProviderConfig] = []
+    seen = set()
+    for provider in rotated:
+        if provider.name in seen:
+            continue
+        unique.append(provider)
+        seen.add(provider.name)
+    return unique
+
+
+def _gateway_config_for_provider(
+    config: GatewayConfig,
+    provider: ProviderConfig,
+) -> GatewayConfig:
+    return replace(
+        config,
+        provider=provider.provider,
+        upstream_url=provider.upstream_url,
+        api_key_env=provider.api_key_env,
+        api_key=provider.api_key,
+        timeout_seconds=(
+            provider.timeout_seconds
+            if provider.timeout_seconds is not None
+            else config.timeout_seconds
+        ),
+        providers=[],
+    )
+
+
+def _is_failover_status(status_code: int, config: GatewayConfig) -> bool:
+    return status_code in set(config.failover_status_codes)
 
 
 def effective_upstream_url(config: GatewayConfig) -> str:
@@ -235,9 +476,7 @@ async def _post_json(
     try:
         response_body = response.json()
     except ValueError:
-        response_body = {
-            "error": {"message": response.text, "type": "upstream_non_json"}
-        }
+        response_body = {"error": {"message": response.text, "type": "upstream_non_json"}}
     return response.status_code, response_body
 
 
@@ -326,9 +565,7 @@ def _anthropic_to_openai_response(
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": text},
-                "finish_reason": _anthropic_finish_reason(
-                    response_json.get("stop_reason")
-                ),
+                "finish_reason": _anthropic_finish_reason(response_json.get("stop_reason")),
             }
         ],
         "usage": {
@@ -455,10 +692,7 @@ def _gemini_generation_config(payload: Mapping[str, Any]) -> dict:
         generation_config["candidateCount"] = payload["n"]
 
     response_format = payload.get("response_format")
-    if (
-        isinstance(response_format, Mapping)
-        and response_format.get("type") == "json_object"
-    ):
+    if isinstance(response_format, Mapping) and response_format.get("type") == "json_object":
         generation_config["responseMimeType"] = "application/json"
 
     return generation_config
@@ -589,7 +823,7 @@ def _build_gemini_headers(
 def _bearer_token(value: str) -> str:
     prefix = "Bearer "
     if value.startswith(prefix):
-        return value[len(prefix):]
+        return value[len(prefix) :]
     return value
 
 

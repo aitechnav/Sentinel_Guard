@@ -153,7 +153,7 @@ curl -s -X POST http://localhost:8080/v1/chat/completions \
 | 1 | `GET /gateway/health` | `200` — lists active scanners |
 | 2 | Injection prompt | `400` — `sentinelguard_prompt_blocked` |
 | 3 | Jailbreak prompt | `400` — blocked before upstream LLM call |
-| 4 | PII prompt with email/phone | `400` — blocked or flagged by PII scanner |
+| 4 | PII prompt with email/phone | Redacted and forwarded when redaction is enabled, or blocked when policy requires blocking |
 | 5 | Secret prompt with AWS/private-key pattern | `400` — blocked by secrets scanner |
 | 6 | Contextual password prompt | `400` — blocked by contextual secret detection |
 | 7 | Safe prompt (`What is 2+2?`) | `200` — normal OpenAI-style completion when the gateway has an API key |
@@ -204,6 +204,17 @@ setup to use:
 ```text
 http://localhost:8080/v1
 ```
+
+For app runtimes that read standard OpenAI environment variables, set the app's
+base URL and app-facing API key to the gateway:
+
+```bash
+export OPENAI_BASE_URL="http://localhost:8080/v1"
+export OPENAI_API_KEY="local-gateway-token"
+```
+
+The gateway container keeps the real upstream provider API key. The app only
+needs the gateway token.
 
 For a shared gateway, set `SENTINELGUARD_GATEWAY_API_KEY` and use that value as
 the client API key. Keep the gateway private to your local machine, VPN, or

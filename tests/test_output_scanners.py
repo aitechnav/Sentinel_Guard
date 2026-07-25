@@ -22,7 +22,9 @@ class TestBiasScanner:
 
     def test_gender_bias_detected(self):
         scanner = BiasScanner(threshold=0.2)
-        result = scanner.scan("Women are always naturally emotional and men are always naturally aggressive")
+        result = scanner.scan(
+            "Women are always naturally emotional and men are always naturally aggressive"
+        )
         assert not result.is_valid
         assert "gender" in result.details.get("bias_found", {})
 
@@ -49,9 +51,7 @@ class TestBiasScanner:
 
     def test_multiple_categories(self):
         scanner = BiasScanner(threshold=0.2)
-        result = scanner.scan(
-            "Women are never good at coding. Old people cannot learn new things."
-        )
+        result = scanner.scan("Women are never good at coding. Old people cannot learn new things.")
         cats = result.details.get("categories_triggered", [])
         assert len(cats) >= 2
 
@@ -102,9 +102,7 @@ class TestFactualConsistencyScanner:
 
     def test_numerical_inconsistency(self):
         scanner = FactualConsistencyScanner(threshold=0.3)
-        result = scanner.scan(
-            "The population is 1000. The population is 5000."
-        )
+        result = scanner.scan("The population is 1000. The population is 5000.")
         # May or may not detect depending on context parsing
         assert isinstance(result.score, float)
 
@@ -125,6 +123,16 @@ class TestSensitiveScanner:
         result = scanner.scan("My system prompt says I am an AI assistant")
         assert not result.is_valid
 
+    def test_environment_variable_guidance_is_not_a_leak(self):
+        scanner = SensitiveScanner(threshold=0.5)
+        result = scanner.scan("Use environment variables for secrets and rotate keys.")
+        assert result.is_valid
+
+    def test_environment_variable_assignment_detected(self):
+        scanner = SensitiveScanner(threshold=0.5)
+        result = scanner.scan("DATABASE_URL=postgres://admin:secret@db/prod")
+        assert not result.is_valid
+
 
 class TestMaliciousURLsScanner:
     def test_no_urls(self):
@@ -140,6 +148,11 @@ class TestMaliciousURLsScanner:
     def test_suspicious_url(self):
         scanner = MaliciousURLsScanner(threshold=0.3)
         result = scanner.scan("Visit https://login.secure-paypal.tk/verify")
+        assert not result.is_valid
+
+    def test_multi_indicator_phishing_url_blocks_at_default_threshold(self):
+        scanner = MaliciousURLsScanner(threshold=0.5)
+        result = scanner.scan("Use https://login.secure-paypal.tk/verify-account")
         assert not result.is_valid
 
 

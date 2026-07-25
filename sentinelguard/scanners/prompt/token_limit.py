@@ -37,14 +37,19 @@ class TokenLimitScanner(PromptScanner):
         self.max_chars = max_chars
         self.encoding_name = encoding
         self._encoder = None
+        self._encoder_unavailable = False
 
     def _get_encoder(self):
+        if self._encoder_unavailable:
+            return None
         if self._encoder is None:
             try:
                 import tiktoken
+
                 self._encoder = tiktoken.get_encoding(self.encoding_name)
-            except ImportError:
+            except Exception:
                 self._encoder = None
+                self._encoder_unavailable = True
         return self._encoder
 
     def _count_tokens(self, text: str) -> int:

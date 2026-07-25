@@ -18,25 +18,46 @@ URL_PATTERN = re.compile(
 )
 
 SUSPICIOUS_TLDS: Set[str] = {
-    ".tk", ".ml", ".ga", ".cf", ".gq",  # Free TLDs often used for phishing
-    ".xyz", ".top", ".work", ".click", ".link",
-    ".info", ".biz", ".zip", ".mov",
+    ".tk",
+    ".ml",
+    ".ga",
+    ".cf",
+    ".gq",  # Free TLDs often used for phishing
+    ".xyz",
+    ".top",
+    ".work",
+    ".click",
+    ".link",
+    ".info",
+    ".biz",
+    ".zip",
+    ".mov",
 }
 
 SUSPICIOUS_PATTERNS = [
     re.compile(r"(?i)(?:login|signin|verify|secure|account|update|confirm)\.", re.IGNORECASE),
     re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"),  # IP addresses in URLs
     re.compile(r"@"),  # URL with embedded credentials
-    re.compile(r"(?i)(?:paypal|apple|google|microsoft|amazon|facebook|netflix)\w*\.(?!com|org|net)"),  # Brand impersonation
+    re.compile(
+        r"(?i)(?:paypal|apple|google|microsoft|amazon|facebook|netflix)\w*\.(?!com|org|net)"
+    ),  # Brand impersonation
     re.compile(r"-{2,}"),  # Multiple hyphens (punycode-like)
     re.compile(r"\.com-\w+\."),  # Deceptive subdomain patterns
     re.compile(r"[^\x00-\x7F]"),  # Non-ASCII characters (IDN homograph)
 ]
 
 KNOWN_SAFE_DOMAINS: Set[str] = {
-    "google.com", "github.com", "stackoverflow.com", "wikipedia.org",
-    "python.org", "microsoft.com", "apple.com", "amazon.com",
-    "youtube.com", "twitter.com", "linkedin.com",
+    "google.com",
+    "github.com",
+    "stackoverflow.com",
+    "wikipedia.org",
+    "python.org",
+    "microsoft.com",
+    "apple.com",
+    "amazon.com",
+    "youtube.com",
+    "twitter.com",
+    "linkedin.com",
 }
 
 
@@ -80,10 +101,12 @@ class MaliciousURLsScanner(OutputScanner):
         for url in urls:
             reasons = self._analyze_url(url)
             if reasons:
-                suspicious_urls.append({
-                    "url": url[:100],  # Truncate for safety
-                    "reasons": reasons,
-                })
+                suspicious_urls.append(
+                    {
+                        "url": url[:100],  # Truncate for safety
+                        "reasons": reasons,
+                    }
+                )
 
         if not suspicious_urls:
             return ScanResult(
@@ -96,7 +119,8 @@ class MaliciousURLsScanner(OutputScanner):
                 },
             )
 
-        score = min(1.0, len(suspicious_urls) * 0.4)
+        max_reasons = max(len(item["reasons"]) for item in suspicious_urls)
+        score = min(1.0, len(suspicious_urls) * 0.35 + max_reasons * 0.15)
         is_valid = score < self.threshold
 
         return ScanResult(

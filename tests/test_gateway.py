@@ -2,16 +2,22 @@
 
 import json
 
-from sentinelguard.gateway.config import GatewayConfig
+import pytest
+
+from sentinelguard.core.scanner import AggregatedResult, RiskLevel, ScanResult
+from sentinelguard.gateway.config import GatewayConfig, ProviderConfig
+from sentinelguard.gateway.policy import PolicyAction, evaluate_prompt_policy
 from sentinelguard.gateway.providers import (
     effective_api_key_env,
     effective_provider,
     effective_upstream_url,
     extract_assistant_text,
     extract_last_user_text,
+    forward_chat_completion_with_failover,
     iter_openai_stream_events,
     replace_assistant_text,
     replace_last_user_text,
+    select_provider_sequence,
     _anthropic_to_openai_response,
     _build_anthropic_headers,
     _build_gemini_headers,
@@ -59,6 +65,37 @@ class TestGatewayConfig:
         assert config.audit_enabled is False
         assert config.audit_hash_salt_env == "CUSTOM_AUDIT_SALT"
 
+    def test_from_nested_dict_with_provider_pool(self):
+        config = GatewayConfig.from_dict(
+            {
+                "gateway": {
+                    "fallback_enabled": True,
+                    "route_pii_to_private_provider": True,
+                    "providers": [
+                        {
+                            "name": "public-openai",
+                            "provider": "openai",
+                            "upstream_url": "https://api.openai.com/v1",
+                            "priority": 10,
+                            "weight": 2,
+                        },
+                        {
+                            "name": "private-ollama",
+                            "provider": "openai-compatible",
+                            "upstream_url": "http://ollama:11434/v1",
+                            "private": True,
+                            "priority": 5,
+                        },
+                    ],
+                }
+            }
+        )
+
+        assert config.route_pii_to_private_provider is True
+        assert len(config.providers) == 2
+        assert config.providers[0].name == "public-openai"
+        assert config.providers[1].private is True
+
     def test_provider_defaults_are_effective_without_overwriting_config(self):
         anthropic = GatewayConfig(provider="anthropic")
         assert effective_provider(anthropic) == "anthropic"
@@ -67,10 +104,7 @@ class TestGatewayConfig:
 
         gemini = GatewayConfig(provider="gemini")
         assert effective_provider(gemini) == "gemini"
-        assert (
-            effective_upstream_url(gemini)
-            == "https://generativelanguage.googleapis.com/v1beta"
-        )
+        assert effective_upstream_url(gemini) == "https://generativelanguage.googleapis.com/v1beta"
         assert effective_api_key_env(gemini) == "GEMINI_API_KEY"
 
 
@@ -92,6 +126,61 @@ class TestGatewayClientAuth:
         assert _is_authorized({"authorization": "Bearer gateway-secret"}, config)
         assert _is_authorized({"x-api-key": "gateway-secret"}, config)
         assert _is_authorized({"x-sentinelguard-api-key": "gateway-secret"}, config)
+
+
+class TestGatewayPolicy:
+    def test_pii_detection_can_redact_instead_of_blocking(self, monkeypatch):
+        monkeypatch.setattr(
+            "sentinelguard.gateway.policy._redact_pii",
+            lambda text: "Contact <EMAIL_ADDRESS>",
+        )
+        result = AggregatedResult(
+            is_valid=False,
+            results=[
+                ScanResult(
+                    is_valid=False,
+                    score=0.9,
+                    risk_level=RiskLevel.HIGH,
+                    scanner_name="pii",
+                )
+            ],
+            failed_scanners=["pii"],
+        )
+
+        decision = evaluate_prompt_policy(
+            "Contact jane@example.com",
+            result,
+            GatewayConfig(redact_pii=True),
+        )
+
+        assert decision.action == PolicyAction.REDACT
+        assert decision.allowed
+        assert decision.sanitized_text == "Contact <EMAIL_ADDRESS>"
+        assert "pii_redacted" in decision.reason_codes
+
+    def test_secret_detection_blocks_by_default(self):
+        result = AggregatedResult(
+            is_valid=False,
+            results=[
+                ScanResult(
+                    is_valid=False,
+                    score=1.0,
+                    risk_level=RiskLevel.CRITICAL,
+                    scanner_name="secrets",
+                )
+            ],
+            failed_scanners=["secrets"],
+        )
+
+        decision = evaluate_prompt_policy(
+            "api_key=sk-proj-secret",
+            result,
+            GatewayConfig(),
+        )
+
+        assert decision.action == PolicyAction.BLOCK
+        assert not decision.allowed
+        assert "secret:secrets" in decision.reason_codes
 
 
 class TestGatewayProviders:
@@ -123,11 +212,7 @@ class TestGatewayProviders:
         assert messages[0]["content"] == "secret"
 
     def test_extract_and_replace_assistant_text(self):
-        response = {
-            "choices": [
-                {"message": {"role": "assistant", "content": "leaky response"}}
-            ]
-        }
+        response = {"choices": [{"message": {"role": "assistant", "content": "leaky response"}}]}
         assert extract_assistant_text(response) == "leaky response"
 
         updated = replace_assistant_text(response, "safe response")
@@ -155,13 +240,78 @@ class TestGatewayProviders:
         assert role_chunk["choices"][0]["delta"] == {"role": "assistant"}
 
         content = "".join(
-            _decode_sse(event)["choices"][0]["delta"].get("content", "")
-            for event in events[1:-2]
+            _decode_sse(event)["choices"][0]["delta"].get("content", "") for event in events[1:-2]
         )
         assert content == "hello world"
 
         final_chunk = _decode_sse(events[-2])
         assert final_chunk["choices"][0]["finish_reason"] == "stop"
+
+    def test_private_route_filters_provider_pool(self):
+        config = GatewayConfig(
+            providers=[
+                ProviderConfig(
+                    name="public",
+                    provider="openai",
+                    upstream_url="https://api.openai.com/v1",
+                    priority=1,
+                ),
+                ProviderConfig(
+                    name="private",
+                    provider="openai-compatible",
+                    upstream_url="http://ollama:11434/v1",
+                    private=True,
+                    priority=2,
+                ),
+            ]
+        )
+
+        assert [provider.name for provider in select_provider_sequence(config)] == [
+            "public",
+            "private",
+        ]
+        assert [
+            provider.name
+            for provider in select_provider_sequence(config, route_constraint="private")
+        ] == ["private"]
+
+    @pytest.mark.asyncio
+    async def test_failover_tries_next_provider_on_retryable_status(self, monkeypatch):
+        async def fake_forward(payload, headers, config):
+            if config.upstream_url == "http://bad/v1":
+                return 503, {"error": {"type": "unavailable"}}
+            return 200, {"choices": [{"message": {"content": "ok"}}]}
+
+        monkeypatch.setattr(
+            "sentinelguard.gateway.providers._forward_chat_completion_single",
+            fake_forward,
+        )
+        config = GatewayConfig(
+            providers=[
+                ProviderConfig(
+                    name="bad",
+                    provider="openai",
+                    upstream_url="http://bad/v1",
+                    priority=1,
+                ),
+                ProviderConfig(
+                    name="good",
+                    provider="openai",
+                    upstream_url="http://good/v1",
+                    priority=2,
+                ),
+            ]
+        )
+
+        result = await forward_chat_completion_with_failover(
+            {"messages": [{"role": "user", "content": "hello"}]},
+            {},
+            config,
+        )
+
+        assert result.status_code == 200
+        assert result.provider_name == "good"
+        assert [attempt.name for attempt in result.attempts] == ["bad", "good"]
 
 
 class TestNativeProviderAdapters:
@@ -234,9 +384,7 @@ class TestNativeProviderAdapters:
 
         translated = _openai_to_gemini_payload(payload)
 
-        assert translated["systemInstruction"] == {
-            "parts": [{"text": "Be helpful."}]
-        }
+        assert translated["systemInstruction"] == {"parts": [{"text": "Be helpful."}]}
         assert translated["contents"] == [
             {"role": "user", "parts": [{"text": "Hello"}]},
             {"role": "model", "parts": [{"text": "Hi"}]},

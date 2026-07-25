@@ -180,7 +180,7 @@ Then point an OpenAI-compatible client at the gateway:
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="not-used-when-gateway-uses-OPENAI_API_KEY",
+    api_key="local-gateway-token",
     base_url="http://localhost:8080/v1",
 )
 
@@ -189,6 +189,18 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "What is the weather today?"}],
 )
 ```
+
+For existing apps that already use the OpenAI SDK, the usual change is just the
+client-facing base URL and client-facing API key:
+
+```bash
+# In the app container or app runtime:
+export OPENAI_BASE_URL="http://localhost:8080/v1"
+export OPENAI_API_KEY="local-gateway-token"
+```
+
+Keep the real upstream provider key on the SentinelGuard gateway process or
+container, not in every application that calls the gateway.
 
 For IDEs and AI tools, configure the tool's OpenAI-compatible base URL or
 custom provider endpoint to use the gateway:
@@ -229,6 +241,11 @@ gateway:
   block_on_prompt_fail: true
   block_on_output_fail: true
   sanitize: true
+  redact_pii: true
+  redact_output_pii: true
+  route_pii_to_private_provider: false
+  fallback_enabled: true
+  failover_status_codes: [408, 409, 425, 429, 500, 502, 503, 504]
 ```
 
 Provider defaults:
@@ -240,6 +257,45 @@ Provider defaults:
 | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
 
 Gemini also checks `GOOGLE_API_KEY` when `GEMINI_API_KEY` is not set.
+
+For multi-provider deployments, define a provider pool. Providers with lower
+priority values are attempted first; providers with the same priority use a
+small weighted rotation. Failover is used only for provider/network failures,
+not for SentinelGuard policy blocks.
+
+```yaml
+gateway:
+  enabled: true
+  client_api_key_env: SENTINELGUARD_GATEWAY_API_KEY
+  sanitize: true
+  redact_pii: true
+  route_pii_to_private_provider: true
+  providers:
+    - name: private-ollama
+      provider: openai-compatible
+      upstream_url: http://ollama:11434/v1
+      api_key_env: OLLAMA_API_KEY
+      private: true
+      priority: 1
+      weight: 1
+    - name: public-openai
+      provider: openai
+      upstream_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      private: false
+      priority: 10
+      weight: 3
+    - name: backup-anthropic
+      provider: anthropic
+      api_key_env: ANTHROPIC_API_KEY
+      private: false
+      priority: 20
+      weight: 1
+```
+
+When `route_pii_to_private_provider` is enabled, prompts with detected PII are
+constrained to providers marked `private: true`. Secrets and prompt attacks are
+blocked before provider egress and are not retried against backup models.
 
 Run with the gateway config:
 
@@ -316,6 +372,30 @@ includes `request_id`, hashed `user_hash`, hashed `tenant_hash`, `direction`,
 not include prompt text, response text, matched PII, or secret values. Pass
 identity context with headers such as `X-Request-ID`, `X-User-ID`, and
 `X-Tenant-ID`, or with the OpenAI-compatible `user` payload field.
+
+### Labeled Security Benchmarks
+
+SentinelGuard includes a labeled benchmark harness for measuring detector
+quality, not just scanner latency. It reports TP/FP/TN/FN, precision, recall,
+F1, false-positive rate, false-negative rate, and latency percentiles.
+
+```bash
+python benchmarks/security.py
+python benchmarks/security.py --format json
+```
+
+The default dataset lives at `benchmarks/datasets/security_benchmark.jsonl`.
+Add new rows for prompt attacks, secrets, PII/PCI/PHI, output leakage, benign
+negatives, multilingual cases, encoded attacks, and domain-specific examples.
+Use this benchmark to tune scanner thresholds before claiming detection
+accuracy.
+
+Recommended implementation approach for future security work:
+
+1. Add or update labeled benchmark cases first.
+2. Add provider-pool, routing, or failover behavior with tests.
+3. Add policy decisions, redaction behavior, or scanner changes and verify the
+   benchmark metrics again.
 
 ### OWASP-Compliant Configuration
 
