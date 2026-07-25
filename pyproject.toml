@@ -93,6 +93,13 @@ target-version = ["py39"]
 line-length = 100
 target-version = "py39"
 
+[tool.ruff.lint]
+# Keep CI focused on correctness rules for now. The wider Ruff rule groups
+# below currently produce hundreds of legacy style findings across the package,
+# so they should be enabled gradually in dedicated cleanup changes.
+select = ["E", "F"]
+ignore = ["BLE", "E501", "I", "PYI", "RUF", "SIM", "UP"]
+
 [tool.mypy]
 python_version = "3.9"
 warn_return_any = true
