@@ -38,16 +38,17 @@ Create the gateway Secret:
 kubectl create secret generic sentinelguard-gateway-secrets \
   -n sentinelguard \
   --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
-  --from-literal=SENTINELGUARD_GATEWAY_API_KEY="shared-gateway-token" \
+  --from-literal=SENTINELGUARD_GATEWAY_API_KEY="replace-with-shared-gateway-token" \
   --from-literal=SENTINELGUARD_AUDIT_SALT="$(openssl rand -hex 32)"
 ```
 
-For Anthropic, Gemini, DeepSeek, Mistral, MiniMax, or Hugging Face, add the
-matching key:
+For Anthropic, Gemini, Kimi/Moonshot, DeepSeek, Mistral, MiniMax, or Hugging
+Face, add the matching key:
 
 ```bash
 --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY"
+--from-literal=MOONSHOT_API_KEY="$MOONSHOT_API_KEY"
 --from-literal=DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
 --from-literal=MISTRAL_API_KEY="$MISTRAL_API_KEY"
 --from-literal=MINIMAX_API_KEY="$MINIMAX_API_KEY"
@@ -87,8 +88,8 @@ the OpenAI-compatible base URL to:
 http://localhost:8080/v1
 ```
 
-Use `shared-gateway-token` as the client API key when gateway client auth is
-enabled.
+Use your `SENTINELGUARD_GATEWAY_API_KEY` value as the client API key when
+gateway client auth is enabled.
 
 ## Optional Ingress
 

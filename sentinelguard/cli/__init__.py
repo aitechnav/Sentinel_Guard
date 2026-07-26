@@ -104,7 +104,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--provider",
         default=None,
         help=(
-            "Gateway provider: openai, anthropic, gemini, deepseek, mistral, "
+            "Gateway provider: openai, anthropic, gemini, kimi, deepseek, mistral, "
             "minimax, ollama, huggingface, or openai-compatible"
         ),
     )

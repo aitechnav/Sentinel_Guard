@@ -196,13 +196,17 @@ response, and returns the safe response.
 pip install "sentinelguard[gateway,monitoring]"
 
 export OPENAI_API_KEY="sk-..."
-export SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token"
+export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
 sentinelguard init
 sentinelguard gateway \
   --config sentinelguard.yaml \
   --gateway-config sentinelguard-gateway.yaml \
   --port 8080
 ```
+
+`OPENAI_API_KEY` is the upstream provider key. `SENTINELGUARD_GATEWAY_API_KEY`
+is a client-facing token that you choose; apps, SDKs, and IDEs use it when they
+call SentinelGuard at `http://localhost:8080/v1`.
 
 For a quick single-provider run without generated files:
 
@@ -230,7 +234,7 @@ docker build -t sentinelguard-gateway .
 
 docker run --rm -p 8080:8080 \
   -e OPENAI_API_KEY="$OPENAI_API_KEY" \
-  -e SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token" \
+  -e SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token" \
   sentinelguard-gateway \
   gateway --provider openai --client-api-key-env SENTINELGUARD_GATEWAY_API_KEY
 ```
@@ -242,7 +246,7 @@ sentinelguard init
 cp .env.example .env
 # Edit .env and set at least one upstream provider key.
 export OPENAI_API_KEY="sk-..."
-export SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token"
+export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
 docker compose -f docker-compose.sentinelguard.yml up --build
 ```
 
@@ -280,6 +284,10 @@ sentinelguard gateway --provider anthropic --port 8080
 # Google Gemini
 export GEMINI_API_KEY="..."
 sentinelguard gateway --provider gemini --port 8080
+
+# Kimi / Moonshot
+export MOONSHOT_API_KEY="..."
+sentinelguard gateway --provider kimi --port 8080
 ```
 
 OpenAI-compatible providers can use the same gateway API shape. SentinelGuard
@@ -306,13 +314,17 @@ export HF_TOKEN="..."
 sentinelguard gateway --provider huggingface --port 8080
 ```
 
+SentinelGuard also supports private OpenAI-compatible model gateways, vLLM, TGI,
+llama.cpp servers, local Ollama, and provider pools that route across multiple
+models with failover.
+
 Then point an OpenAI-compatible client at the gateway:
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="local-gateway-token",
+    api_key="replace-with-a-random-local-token",
     base_url="http://localhost:8080/v1",
 )
 
@@ -328,7 +340,7 @@ client-facing base URL and client-facing API key:
 ```bash
 # In the app container or app runtime:
 export OPENAI_BASE_URL="http://localhost:8080/v1"
-export OPENAI_API_KEY="local-gateway-token"
+export OPENAI_API_KEY="replace-with-a-random-local-token"
 ```
 
 Keep the real upstream provider key on the SentinelGuard gateway process or
@@ -511,13 +523,15 @@ Provider defaults:
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `anthropic` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
 | `gemini` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
+| `kimi` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
 | `deepseek` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
 | `mistral` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
 | `minimax` | `https://api.minimaxi.com/v1` | `MINIMAX_API_KEY` |
 | `ollama` | `http://localhost:11434/v1` | `OLLAMA_API_KEY` optional |
 | `huggingface` | `https://router.huggingface.co/v1` | `HF_TOKEN` |
 
-Gemini also checks `GOOGLE_API_KEY` when `GEMINI_API_KEY` is not set.
+Gemini also checks `GOOGLE_API_KEY` when `GEMINI_API_KEY` is not set. Kimi also
+checks `KIMI_API_KEY` when `MOONSHOT_API_KEY` is not set.
 For custom OpenAI-compatible servers such as vLLM, TGI, llama.cpp servers, or
 private model gateways, set `provider: openai-compatible` and provide
 `upstream_url`.

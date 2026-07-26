@@ -200,7 +200,7 @@ def _env_example() -> str:
         SENTINELGUARD_VERSION={__version__}
         SENTINELGUARD_EXTRAS=gateway,monitoring
         SENTINELGUARD_IMAGE=sentinelguard-gateway:local
-        SENTINELGUARD_GATEWAY_API_KEY=change-me-local-gateway-token
+        SENTINELGUARD_GATEWAY_API_KEY=replace-with-a-random-local-token
         SENTINELGUARD_AUDIT_SALT=change-me-random-audit-salt
         SENTINELGUARD_GATEWAY_PORT=8080
 
@@ -209,6 +209,8 @@ def _env_example() -> str:
         GEMINI_API_KEY=
         GOOGLE_API_KEY=
         DEEPSEEK_API_KEY=
+        MOONSHOT_API_KEY=
+        KIMI_API_KEY=
         MISTRAL_API_KEY=
         MINIMAX_API_KEY=
         HF_TOKEN=
@@ -266,6 +268,8 @@ def _docker_compose(docker_image: str) -> str:
               GEMINI_API_KEY: ${{GEMINI_API_KEY:-}}
               GOOGLE_API_KEY: ${{GOOGLE_API_KEY:-}}
               DEEPSEEK_API_KEY: ${{DEEPSEEK_API_KEY:-}}
+              MOONSHOT_API_KEY: ${{MOONSHOT_API_KEY:-}}
+              KIMI_API_KEY: ${{KIMI_API_KEY:-}}
               MISTRAL_API_KEY: ${{MISTRAL_API_KEY:-}}
               MINIMAX_API_KEY: ${{MINIMAX_API_KEY:-}}
               HF_TOKEN: ${{HF_TOKEN:-}}
@@ -333,7 +337,7 @@ def _readme(profile: str) -> str:
 
         ```bash
         python -m pip install "sentinelguard[gateway,monitoring]"
-        export SENTINELGUARD_GATEWAY_API_KEY="change-me-local-gateway-token"
+        export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
         export SENTINELGUARD_AUDIT_SALT="change-me-random-audit-salt"
         export OPENAI_API_KEY="your-provider-key"
         sentinelguard gateway \\
@@ -341,6 +345,10 @@ def _readme(profile: str) -> str:
           --gateway-config sentinelguard-gateway.yaml \\
           --port 8080
         ```
+
+        `OPENAI_API_KEY` is the upstream provider key. The
+        `SENTINELGUARD_GATEWAY_API_KEY` value is a client-facing token that you
+        choose for apps and IDEs calling SentinelGuard.
 
         ## Run With Docker Compose
 
@@ -363,7 +371,9 @@ def _readme(profile: str) -> str:
         ```
 
         Use `fast-chat` for OpenAI, `smart-chat` for Anthropic, and
-        `private-chat` for local Ollama. Remove provider routes you do not use.
+        `private-chat` for local Ollama. SentinelGuard also supports Gemini,
+        Kimi/Moonshot, DeepSeek, Mistral, MiniMax, Hugging Face, and custom
+        OpenAI-compatible providers. Remove provider routes you do not use.
 
         Useful checks:
 

@@ -64,6 +64,8 @@ GET /gateway/provider-health
 ## Authentication
 
 Runtime traffic and usage endpoints use the gateway client key when configured.
+This is the token you set with `SENTINELGUARD_GATEWAY_API_KEY`; it is separate
+from upstream provider keys such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
 Supported client headers:
 
 ```text

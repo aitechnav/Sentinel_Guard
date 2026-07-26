@@ -203,6 +203,15 @@ class TestGatewayConfig:
         assert effective_upstream_url(huggingface) == "https://router.huggingface.co/v1"
         assert effective_api_key_env(huggingface) == "HF_TOKEN"
 
+        kimi = GatewayConfig(provider="kimi")
+        assert effective_provider(kimi) == "kimi"
+        assert effective_upstream_url(kimi) == "https://api.moonshot.ai/v1"
+        assert effective_api_key_env(kimi) == "MOONSHOT_API_KEY"
+
+        moonshot = GatewayConfig(provider="moonshot")
+        assert effective_provider(moonshot) == "kimi"
+        assert effective_upstream_url(moonshot) == "https://api.moonshot.ai/v1"
+
         custom = GatewayConfig(provider="my-openai-compatible-api")
         assert effective_provider(custom) == "openai-compatible"
         assert effective_upstream_url(custom) == "https://api.openai.com/v1"

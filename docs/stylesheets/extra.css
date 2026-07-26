@@ -176,6 +176,22 @@
   padding: 0.3rem 0.58rem;
 }
 
+.sg-provider-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 1rem;
+}
+
+.sg-provider-row span {
+  border-left: 3px solid var(--sg-teal);
+  color: var(--sg-muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1.2;
+  padding: 0.12rem 0 0.12rem 0.45rem;
+}
+
 .sg-terminal {
   background: var(--sg-code-bg);
   border: 1px solid rgba(255, 255, 255, 0.14);
