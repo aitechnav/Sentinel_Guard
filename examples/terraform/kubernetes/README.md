@@ -6,7 +6,8 @@ This example deploys the SentinelGuard Helm chart with Terraform.
 terraform init
 terraform apply \
   -var='openai_api_key=sk-...' \
-  -var='gateway_api_key=replace-with-a-random-local-token'
+  -var="gateway_api_key=$(sentinelguard token)" \
+  -var="audit_salt=$(sentinelguard token --prefix sgaudit)"
 ```
 
 The example assumes your local Kubernetes context already points at the target

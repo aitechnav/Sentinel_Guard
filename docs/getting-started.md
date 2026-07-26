@@ -67,15 +67,18 @@ Gateway mode usually has two kinds of keys:
 - An upstream provider key, such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   `GEMINI_API_KEY`, or `MOONSHOT_API_KEY`. SentinelGuard uses this to call the
   model provider.
-- `SENTINELGUARD_GATEWAY_API_KEY`, a client-facing token that you choose.
+- `SENTINELGUARD_GATEWAY_API_KEY`, a client-facing token that you generate.
   Applications and IDEs use this token when they call SentinelGuard at
   `http://localhost:8080/v1`.
 
-For local testing, this gateway token can be any random string:
+For local testing, generate the gateway token locally:
 
 ```bash
-export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
+export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"
 ```
+
+Package-mode library usage does not need `SENTINELGUARD_GATEWAY_API_KEY`.
+Gateway mode uses it to protect the local or shared proxy endpoint.
 
 Supported gateway providers include OpenAI, Anthropic Claude, Google Gemini,
 Kimi / Moonshot, DeepSeek, Mistral, MiniMax, Ollama, Hugging Face, and custom
@@ -87,6 +90,7 @@ gateways.
 Scanner settings can be updated without opening the YAML file:
 
 ```bash
+sentinelguard token --env
 sentinelguard config init --preset standard --output sentinelguard.yaml
 sentinelguard config set prompt_scanners.pii.threshold 0.3 --file sentinelguard.yaml
 sentinelguard config disable toxicity --type prompt --file sentinelguard.yaml

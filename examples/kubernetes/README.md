@@ -38,8 +38,8 @@ Create the gateway Secret:
 kubectl create secret generic sentinelguard-gateway-secrets \
   -n sentinelguard \
   --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
-  --from-literal=SENTINELGUARD_GATEWAY_API_KEY="replace-with-shared-gateway-token" \
-  --from-literal=SENTINELGUARD_AUDIT_SALT="$(openssl rand -hex 32)"
+  --from-literal=SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)" \
+  --from-literal=SENTINELGUARD_AUDIT_SALT="$(sentinelguard token --prefix sgaudit)"
 ```
 
 For Anthropic, Gemini, Kimi/Moonshot, DeepSeek, Mistral, MiniMax, or Hugging

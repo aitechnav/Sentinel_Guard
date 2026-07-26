@@ -15,14 +15,14 @@ Application or IDE
 The example below uses two different keys:
 
 - `OPENAI_API_KEY` is the upstream provider key used by SentinelGuard to call OpenAI.
-- `SENTINELGUARD_GATEWAY_API_KEY` is a client-facing token that you choose. Your
+- `SENTINELGUARD_GATEWAY_API_KEY` is a client-facing token that you generate. Your
   apps, IDEs, and SDKs use this token when calling SentinelGuard at
   `http://localhost:8080/v1`.
 
 ```bash
 pip install "sentinelguard[gateway,monitoring]"
 export OPENAI_API_KEY="sk-..."
-export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
+export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"
 
 sentinelguard init
 sentinelguard gateway \
@@ -31,8 +31,11 @@ sentinelguard gateway \
   --port 8080
 ```
 
-For local testing, the gateway token can be any random string. In shared or
-production deployments, use a generated secret and keep it out of source code.
+For local testing, `sentinelguard token` generates a secure random local token.
+In shared or production deployments, keep that value out of source code.
+If you remove `client_api_key_env` and all `virtual_keys` from the gateway YAML,
+client-token authentication is disabled; keep it enabled for shared Docker,
+Kubernetes, or team gateways.
 
 ## Supported Providers
 
@@ -109,8 +112,8 @@ curl http://localhost:8080/gateway/v1/provider-health
 ## Docker Compose
 
 ```bash
-sentinelguard init
-cp .env.example .env
+sentinelguard init --with-env
+# Edit .env and set at least one upstream provider key, such as OPENAI_API_KEY.
 docker compose -f docker-compose.sentinelguard.yml up --build
 ```
 

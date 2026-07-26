@@ -64,7 +64,7 @@ description: Security-first LLM gateway and guardrails framework for AI applicat
       <p class="sg-panel-title">Install and start the gateway</p>
       <pre><code>pip install "sentinelguard[gateway,monitoring]"
 export OPENAI_API_KEY="sk-..."
-export SENTINELGUARD_GATEWAY_API_KEY="your-gateway-token"
+export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"
 sentinelguard init
 sentinelguard gateway \
   --config sentinelguard.yaml \

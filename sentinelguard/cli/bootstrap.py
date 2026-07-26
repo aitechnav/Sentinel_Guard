@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
@@ -34,6 +35,7 @@ def create_project_scaffold(
     preset: str = "standard",
     docker_image: str = "sentinelguard-gateway:local",
     include_docker: bool = True,
+    include_env: bool = False,
     force: bool = False,
 ) -> InitResult:
     """Create starter files for using SentinelGuard in a project."""
@@ -44,7 +46,13 @@ def create_project_scaffold(
 
     files = list(_base_files(profile=profile, preset=preset))
     if profile == "gateway":
-        files.extend(_gateway_files(docker_image=docker_image, include_docker=include_docker))
+        files.extend(
+            _gateway_files(
+                docker_image=docker_image,
+                include_docker=include_docker,
+                include_env=include_env,
+            )
+        )
 
     created: list[Path] = []
     skipped: list[Path] = []
@@ -65,6 +73,12 @@ def create_project_scaffold(
     )
 
 
+def generate_gateway_token(*, prefix: str = "sgw", nbytes: int = 32) -> str:
+    """Generate a local client-facing gateway token."""
+    safe_prefix = (prefix or "sgw").strip().replace("-", "_") or "sgw"
+    return f"{safe_prefix}_{secrets.token_urlsafe(nbytes)}"
+
+
 def _base_files(profile: str, preset: str) -> Iterable[tuple[str, str]]:
     yield "sentinelguard.yaml", _scanner_config_yaml(preset)
     yield "README.sentinelguard.md", _readme(profile)
@@ -74,9 +88,12 @@ def _gateway_files(
     *,
     docker_image: str,
     include_docker: bool,
+    include_env: bool,
 ) -> Iterable[tuple[str, str]]:
     yield "sentinelguard-gateway.yaml", _gateway_config_yaml()
     yield ".env.example", _env_example()
+    if include_env:
+        yield ".env", _env_file()
     if include_docker:
         yield "Dockerfile.sentinelguard", _dockerfile()
         yield "docker-compose.sentinelguard.yml", _docker_compose(docker_image)
@@ -196,12 +213,46 @@ def _env_example() -> str:
         f"""\
         # Copy this file to .env for Docker Compose, or export these variables in your shell.
         # Never commit real provider keys.
+        # Generate local SentinelGuard tokens with:
+        #   sentinelguard token
+        #   sentinelguard token --prefix sgaudit
 
         SENTINELGUARD_VERSION={__version__}
         SENTINELGUARD_EXTRAS=gateway,monitoring
         SENTINELGUARD_IMAGE=sentinelguard-gateway:local
-        SENTINELGUARD_GATEWAY_API_KEY=replace-with-a-random-local-token
-        SENTINELGUARD_AUDIT_SALT=change-me-random-audit-salt
+        SENTINELGUARD_GATEWAY_API_KEY=
+        SENTINELGUARD_AUDIT_SALT=
+        SENTINELGUARD_GATEWAY_PORT=8080
+
+        OPENAI_API_KEY=
+        ANTHROPIC_API_KEY=
+        GEMINI_API_KEY=
+        GOOGLE_API_KEY=
+        DEEPSEEK_API_KEY=
+        MOONSHOT_API_KEY=
+        KIMI_API_KEY=
+        MISTRAL_API_KEY=
+        MINIMAX_API_KEY=
+        HF_TOKEN=
+        HUGGINGFACE_API_KEY=
+        OLLAMA_API_KEY=
+        """
+    )
+
+
+def _env_file() -> str:
+    gateway_token = generate_gateway_token()
+    audit_salt = generate_gateway_token(prefix="sgaudit")
+    return dedent(
+        f"""\
+        # Local SentinelGuard gateway environment.
+        # This file contains generated local tokens. Do not commit it.
+
+        SENTINELGUARD_VERSION={__version__}
+        SENTINELGUARD_EXTRAS=gateway,monitoring
+        SENTINELGUARD_IMAGE=sentinelguard-gateway:local
+        SENTINELGUARD_GATEWAY_API_KEY={gateway_token}
+        SENTINELGUARD_AUDIT_SALT={audit_salt}
         SENTINELGUARD_GATEWAY_PORT=8080
 
         OPENAI_API_KEY=
@@ -337,8 +388,8 @@ def _readme(profile: str) -> str:
 
         ```bash
         python -m pip install "sentinelguard[gateway,monitoring]"
-        export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
-        export SENTINELGUARD_AUDIT_SALT="change-me-random-audit-salt"
+        export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"
+        export SENTINELGUARD_AUDIT_SALT="$(sentinelguard token --prefix sgaudit)"
         export OPENAI_API_KEY="your-provider-key"
         sentinelguard gateway \\
           --config sentinelguard.yaml \\
@@ -353,7 +404,7 @@ def _readme(profile: str) -> str:
         ## Run With Docker Compose
 
         ```bash
-        cp .env.example .env
+        sentinelguard init --with-env
         # Edit .env and set at least one upstream provider key.
         docker compose -f docker-compose.sentinelguard.yml up --build
         ```
