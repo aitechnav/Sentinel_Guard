@@ -398,9 +398,9 @@ def _readme(profile: str) -> str:
         ```
 
         `OPENAI_API_KEY` is the upstream provider key. The
-        `SENTINELGUARD_GATEWAY_API_KEY` value is a client-facing token that you
-        generate for apps and IDEs calling SentinelGuard. Use the same `sgw_...`
-        value in the gateway environment and in each app or IDE API-key field.
+        `SENTINELGUARD_GATEWAY_API_KEY` value is the gateway client token
+        created by the team running SentinelGuard. Use the same `sgw_...` value
+        in the gateway environment and in each app or IDE API-key field.
         Keep the real upstream provider key only on the SentinelGuard gateway.
 
         ## Run With Docker Compose
