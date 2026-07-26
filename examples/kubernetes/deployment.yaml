@@ -63,6 +63,18 @@ spec:
                   name: sentinelguard-gateway-secrets
                   key: DEEPSEEK_API_KEY
                   optional: true
+            - name: MOONSHOT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: MOONSHOT_API_KEY
+                  optional: true
+            - name: KIMI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: KIMI_API_KEY
+                  optional: true
             - name: MISTRAL_API_KEY
               valueFrom:
                 secretKeyRef:

@@ -42,6 +42,17 @@ description: Security-first LLM gateway and guardrails framework for AI applicat
         <span>Prometheus metrics</span>
         <span>Docker and Kubernetes ready</span>
       </div>
+      <div class="sg-provider-row" aria-label="Supported providers">
+        <span>OpenAI</span>
+        <span>Anthropic Claude</span>
+        <span>Google Gemini</span>
+        <span>Kimi / Moonshot</span>
+        <span>DeepSeek</span>
+        <span>Mistral</span>
+        <span>MiniMax</span>
+        <span>Ollama</span>
+        <span>Hugging Face</span>
+      </div>
     </div>
 
     <div class="sg-terminal" aria-label="SentinelGuard gateway quick start">
@@ -52,6 +63,8 @@ description: Security-first LLM gateway and guardrails framework for AI applicat
       </div>
       <p class="sg-panel-title">Install and start the gateway</p>
       <pre><code>pip install "sentinelguard[gateway,monitoring]"
+export OPENAI_API_KEY="sk-..."
+export SENTINELGUARD_GATEWAY_API_KEY="your-gateway-token"
 sentinelguard init
 sentinelguard gateway \
   --config sentinelguard.yaml \

@@ -7,21 +7,62 @@ SentinelGuard first.
 ```text
 Application or IDE
   -> SentinelGuard /v1/chat/completions
-  -> OpenAI, Anthropic, Gemini, Ollama, Mistral, DeepSeek, or another provider
+  -> OpenAI, Anthropic, Gemini, Kimi, Ollama, Mistral, DeepSeek, or another provider
 ```
 
 ## Start Locally
 
+The example below uses two different keys:
+
+- `OPENAI_API_KEY` is the upstream provider key used by SentinelGuard to call OpenAI.
+- `SENTINELGUARD_GATEWAY_API_KEY` is a client-facing token that you choose. Your
+  apps, IDEs, and SDKs use this token when calling SentinelGuard at
+  `http://localhost:8080/v1`.
+
 ```bash
 pip install "sentinelguard[gateway,monitoring]"
 export OPENAI_API_KEY="sk-..."
-export SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token"
+export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
 
 sentinelguard init
 sentinelguard gateway \
   --config sentinelguard.yaml \
   --gateway-config sentinelguard-gateway.yaml \
   --port 8080
+```
+
+For local testing, the gateway token can be any random string. In shared or
+production deployments, use a generated secret and keep it out of source code.
+
+## Supported Providers
+
+SentinelGuard can run as one gateway in front of public, private, and local
+model providers:
+
+| Provider | CLI shortcut | Key environment variable |
+| --- | --- | --- |
+| OpenAI | `--provider openai` | `OPENAI_API_KEY` |
+| Anthropic Claude | `--provider anthropic` | `ANTHROPIC_API_KEY` |
+| Google Gemini | `--provider gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+| Kimi / Moonshot | `--provider kimi` | `MOONSHOT_API_KEY` or `KIMI_API_KEY` |
+| DeepSeek | `--provider deepseek` | `DEEPSEEK_API_KEY` |
+| Mistral | `--provider mistral` | `MISTRAL_API_KEY` |
+| MiniMax | `--provider minimax` | `MINIMAX_API_KEY` |
+| Ollama | `--provider ollama` | optional `OLLAMA_API_KEY` |
+| Hugging Face router | `--provider huggingface` | `HF_TOKEN` or `HUGGINGFACE_API_KEY` |
+| vLLM, TGI, llama.cpp, private gateways | `--provider openai-compatible` | your configured key env |
+
+Examples:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+sentinelguard gateway --provider anthropic --port 8080
+
+export GEMINI_API_KEY="..."
+sentinelguard gateway --provider gemini --port 8080
+
+export MOONSHOT_API_KEY="..."
+sentinelguard gateway --provider kimi --port 8080
 ```
 
 ## Configure Apps And IDEs
@@ -33,7 +74,8 @@ http://localhost:8080/v1
 ```
 
 If gateway client authentication is enabled, use the configured gateway token as
-the client API key.
+the client API key. That value is your `SENTINELGUARD_GATEWAY_API_KEY`, not the
+upstream provider key.
 
 ## Change Gateway Settings
 

@@ -60,6 +60,28 @@ This creates:
 
 Use `--profile library` when you only want package-mode scanner configuration.
 
+## Gateway Keys
+
+Gateway mode usually has two kinds of keys:
+
+- An upstream provider key, such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+  `GEMINI_API_KEY`, or `MOONSHOT_API_KEY`. SentinelGuard uses this to call the
+  model provider.
+- `SENTINELGUARD_GATEWAY_API_KEY`, a client-facing token that you choose.
+  Applications and IDEs use this token when they call SentinelGuard at
+  `http://localhost:8080/v1`.
+
+For local testing, this gateway token can be any random string:
+
+```bash
+export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
+```
+
+Supported gateway providers include OpenAI, Anthropic Claude, Google Gemini,
+Kimi / Moonshot, DeepSeek, Mistral, MiniMax, Ollama, Hugging Face, and custom
+OpenAI-compatible providers such as vLLM, TGI, llama.cpp, or private model
+gateways.
+
 ## Change Configuration From The CLI
 
 Scanner settings can be updated without opening the YAML file:
