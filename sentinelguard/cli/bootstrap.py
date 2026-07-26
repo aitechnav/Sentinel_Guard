@@ -180,7 +180,7 @@ def _gateway_config_yaml() -> str:
               weight: 3
               input_cost_per_token: 0.00000015
               output_cost_per_token: 0.0000006
-              max_parallel_requests: 50
+              max_parallel_requests: 250
 
             - name: anthropic-smart
               provider: anthropic
@@ -192,7 +192,7 @@ def _gateway_config_yaml() -> str:
               weight: 1
               input_cost_per_token: 0.000003
               output_cost_per_token: 0.000015
-              max_parallel_requests: 25
+              max_parallel_requests: 150
 
             - name: ollama-private
               provider: ollama
@@ -203,7 +203,7 @@ def _gateway_config_yaml() -> str:
               private: true
               priority: 5
               weight: 1
-              max_parallel_requests: 10
+              max_parallel_requests: 25
         """
     )
 

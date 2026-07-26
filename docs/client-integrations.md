@@ -70,6 +70,13 @@ Recommended controls for EKS:
 - Give app teams the gateway token, not the upstream LLM provider key.
 - Monitor `/gateway/v1/health`, `/gateway/v1/provider-health`, and `/metrics`.
 
+For capacity, scale SentinelGuard like any other internal stateless gateway:
+start with multiple replicas behind the Kubernetes Service, set CPU and memory
+requests, and use HPA or your platform autoscaler. The real limit is usually
+the combination of enabled scanners, upstream provider latency, and upstream
+provider rate limits. See [Deployment](deployment.md#capacity-and-scaling) for
+sizing guidance.
+
 ## EC2 Services
 
 For an app and SentinelGuard on the same EC2 instance, bind the gateway to
@@ -96,6 +103,9 @@ Recommended controls for EC2:
   environment managed by your deployment tooling.
 - Use one virtual key per service so usage, budget, and incidents can be traced
   without sharing one token everywhere.
+
+For higher traffic, prefer a small pool of EC2 gateway instances or containers
+behind an internal load balancer instead of one large instance.
 
 ## Docker Compose
 
