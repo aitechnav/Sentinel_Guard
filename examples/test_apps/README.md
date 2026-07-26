@@ -108,7 +108,7 @@ Or run the same gateway as a Docker proxy:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
+export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"
 docker compose up --build
 ```
 
@@ -233,7 +233,7 @@ base URL and app-facing API key to the gateway:
 
 ```bash
 export OPENAI_BASE_URL="http://localhost:8080/v1"
-export OPENAI_API_KEY="replace-with-a-random-local-token"
+export OPENAI_API_KEY="$SENTINELGUARD_GATEWAY_API_KEY"
 ```
 
 The gateway container keeps the real upstream provider API key. The app only

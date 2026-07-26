@@ -38,5 +38,4 @@ variable "audit_salt" {
   description = "Salt used for privacy-safe audit hashing."
   type        = string
   sensitive   = true
-  default     = "change-me"
 }

@@ -9,6 +9,7 @@ Usage:
     sentinelguard init
     sentinelguard serve --port 8000
     sentinelguard gateway --provider openai --port 8080
+    sentinelguard token --env
     sentinelguard gateway --provider anthropic --port 8080
     sentinelguard gateway --provider gemini --port 8080
     sentinelguard config show
@@ -70,6 +71,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Do not create docker-compose.sentinelguard.yml",
     )
     init_parser.add_argument(
+        "--with-env",
+        action="store_true",
+        help="Create a local .env file with generated SentinelGuard gateway tokens",
+    )
+    init_parser.add_argument(
         "--force",
         action="store_true",
         help="Overwrite existing generated files",
@@ -126,6 +132,33 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--sanitize", choices=["true", "false"], default=None, help="Forward sanitized text"
     )
     gateway_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
+
+    # ── token command ──
+    token_parser = subparsers.add_parser(
+        "token",
+        help="Generate a local SentinelGuard gateway client token",
+    )
+    token_parser.add_argument(
+        "--env",
+        action="store_true",
+        help="Print a shell export command instead of only the token",
+    )
+    token_parser.add_argument(
+        "--name",
+        default="SENTINELGUARD_GATEWAY_API_KEY",
+        help="Environment variable name used with --env",
+    )
+    token_parser.add_argument(
+        "--prefix",
+        default="sgw",
+        help="Token prefix, such as sgw or sgaudit",
+    )
+    token_parser.add_argument(
+        "--bytes",
+        type=int,
+        default=32,
+        help="Number of random bytes to use; minimum is 16",
+    )
 
     # ── config command ──
     config_parser = subparsers.add_parser("config", help="Manage configuration")
@@ -215,6 +248,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_serve(args)
     elif args.command == "gateway":
         return _handle_gateway(args)
+    elif args.command == "token":
+        return _handle_token(args)
     elif args.command == "config":
         return _handle_config(args)
     elif args.command == "gateway-config":
@@ -237,6 +272,7 @@ def _handle_init(args: argparse.Namespace) -> int:
             preset=args.preset,
             docker_image=args.docker_image,
             include_docker=not args.without_docker,
+            include_env=args.with_env,
             force=args.force,
         )
     except ValueError as exc:
@@ -259,10 +295,16 @@ def _handle_init(args: argparse.Namespace) -> int:
     if result.profile == "gateway":
         print("\nNext steps:")
         print('  1. python -m pip install "sentinelguard[gateway,monitoring]"')
-        print("  2. export SENTINELGUARD_GATEWAY_API_KEY=<gateway-token>")
-        print("  3. export OPENAI_API_KEY=<provider-key>")
+        if args.with_env:
+            print("  2. Add your provider key to .env, such as OPENAI_API_KEY")
+            start_step = 3
+        else:
+            print('  2. export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"')
+            print('  3. export SENTINELGUARD_AUDIT_SALT="$(sentinelguard token --prefix sgaudit)"')
+            print("  4. export OPENAI_API_KEY=<provider-key>")
+            start_step = 5
         print(
-            "  4. sentinelguard gateway "
+            f"  {start_step}. sentinelguard gateway "
             "--config sentinelguard.yaml "
             "--gateway-config sentinelguard-gateway.yaml "
             "--port 8080"
@@ -275,6 +317,22 @@ def _handle_init(args: argparse.Namespace) -> int:
         print("  2. from sentinelguard import SentinelGuard")
         print('  3. guard = SentinelGuard.from_config("sentinelguard.yaml")')
 
+    return 0
+
+
+def _handle_token(args: argparse.Namespace) -> int:
+    """Handle the token command."""
+    from sentinelguard.cli.bootstrap import generate_gateway_token
+
+    if args.bytes < 16:
+        print("Error: --bytes must be at least 16")
+        return 1
+
+    token = generate_gateway_token(prefix=args.prefix, nbytes=args.bytes)
+    if args.env:
+        print(f'export {args.name}="{token}"')
+    else:
+        print(token)
     return 0
 
 

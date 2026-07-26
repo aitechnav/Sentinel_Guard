@@ -119,7 +119,7 @@ docker compose -f docker-compose.sentinelguard.yml up --build
 
 # Start OpenAI-compatible LLM gateway from generated config
 export OPENAI_API_KEY="sk-..."
-export SENTINELGUARD_GATEWAY_API_KEY="replace-with-a-random-local-token"
+export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"
 sentinelguard gateway \
   --config sentinelguard.yaml \
   --gateway-config sentinelguard-gateway.yaml \
@@ -141,8 +141,9 @@ sentinelguard gateway --provider kimi --port 8080
 
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and
 `MOONSHOT_API_KEY` are upstream provider keys. `SENTINELGUARD_GATEWAY_API_KEY`
-is a client-facing token you choose for apps and IDEs that call the
+is a client-facing token you generate for apps and IDEs that call the
 SentinelGuard gateway.
+Package-mode library usage does not need this gateway token.
 
 Point OpenAI-compatible apps or IDEs to:
 

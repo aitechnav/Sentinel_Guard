@@ -36,7 +36,9 @@ env:
   HF_TOKEN: ""
   HUGGINGFACE_API_KEY: ""
   OLLAMA_API_KEY: ""
+  # Generate with: sentinelguard token
   SENTINELGUARD_GATEWAY_API_KEY: ""
+  # Generate with: sentinelguard token --prefix sgaudit
   SENTINELGUARD_AUDIT_SALT: ""
 
 gatewayConfig: |
