@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from sentinelguard import __version__
 from sentinelguard.cli import main
 from sentinelguard.gateway.config import GatewayConfig
 
@@ -16,6 +17,7 @@ def test_init_gateway_creates_runnable_starter_files(tmp_path, capsys):
         "sentinelguard.yaml",
         "sentinelguard-gateway.yaml",
         ".env.example",
+        "Dockerfile.sentinelguard",
         "docker-compose.sentinelguard.yml",
         "README.sentinelguard.md",
     }
@@ -43,8 +45,16 @@ def test_init_gateway_creates_runnable_starter_files(tmp_path, capsys):
     ]
     compose_config = yaml.safe_load((tmp_path / "docker-compose.sentinelguard.yml").read_text())
     service = compose_config["services"]["sentinelguard-gateway"]
+    assert service["build"]["dockerfile"] == "Dockerfile.sentinelguard"
+    assert service["build"]["args"]["SENTINELGUARD_VERSION"] == (
+        f"${{SENTINELGUARD_VERSION:-{__version__}}}"
+    )
+    assert service["image"] == "${SENTINELGUARD_IMAGE:-sentinelguard-gateway:local}"
     assert service["ports"] == ["${SENTINELGUARD_GATEWAY_PORT:-8080}:8080"]
     assert "--gateway-config" in service["command"]
+
+    dockerfile = (tmp_path / "Dockerfile.sentinelguard").read_text()
+    assert "sentinelguard[${SENTINELGUARD_EXTRAS}]==${SENTINELGUARD_VERSION}" in dockerfile
 
     output = capsys.readouterr().out
     assert "sentinelguard gateway --config sentinelguard.yaml" in output
@@ -99,3 +109,96 @@ def test_init_without_docker_omits_compose_file(tmp_path):
 
     assert exit_code == 0
     assert not Path(tmp_path / "docker-compose.sentinelguard.yml").exists()
+
+
+def test_config_set_get_and_toggle_updates_scanner_config(tmp_path, capsys):
+    config_path = tmp_path / "sentinelguard.yaml"
+    assert main(["config", "init", "--output", str(config_path)]) == 0
+
+    assert main(["config", "set", "mode", "strict", "--file", str(config_path)]) == 0
+    assert (
+        main(
+            [
+                "config",
+                "set",
+                "prompt_scanners.prompt_injection.threshold",
+                "0.72",
+                "--file",
+                str(config_path),
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(["config", "disable", "pii", "--type", "prompt", "--file", str(config_path)])
+        == 0
+    )
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["mode"] == "strict"
+    assert config["prompt_scanners"]["prompt_injection"]["threshold"] == 0.72
+    assert config["prompt_scanners"]["pii"]["enabled"] is False
+
+    assert (
+        main(
+            [
+                "config",
+                "get",
+                "prompt_scanners.prompt_injection.threshold",
+                "--file",
+                str(config_path),
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.rstrip().endswith("0.72")
+
+
+def test_gateway_config_set_get_updates_generated_gateway_config(tmp_path, capsys):
+    assert main(["init", "--output-dir", str(tmp_path)]) == 0
+    gateway_path = tmp_path / "sentinelguard-gateway.yaml"
+
+    assert (
+        main(
+            [
+                "gateway-config",
+                "set",
+                "gateway.cache_enabled",
+                "true",
+                "--file",
+                str(gateway_path),
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
+                "gateway-config",
+                "set",
+                "gateway.providers.0.priority",
+                "7",
+                "--file",
+                str(gateway_path),
+            ]
+        )
+        == 0
+    )
+
+    config = yaml.safe_load(gateway_path.read_text(encoding="utf-8"))
+    assert config["gateway"]["cache_enabled"] is True
+    assert config["gateway"]["providers"][0]["priority"] == 7
+
+    assert (
+        main(
+            [
+                "gateway-config",
+                "get",
+                "gateway.routing_strategy",
+                "--file",
+                str(gateway_path),
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.rstrip().endswith("priority")

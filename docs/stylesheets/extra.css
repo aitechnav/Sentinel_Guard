@@ -1,0 +1,156 @@
+.sg-github-star {
+  position: fixed;
+  top: 0.64rem;
+  right: 5.25rem;
+  z-index: 5;
+  height: 1.5rem;
+  line-height: 1;
+}
+
+@media screen and (max-width: 76.1875em) {
+  .sg-github-star {
+    display: none;
+  }
+}
+
+.sg-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
+  gap: 2rem;
+  align-items: center;
+  margin: 1.2rem 0 2.6rem;
+  padding: 2.2rem 0 1.2rem;
+}
+
+.sg-hero h2 {
+  margin: 0 0 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.08;
+  font-size: clamp(2rem, 5vw, 3.35rem);
+}
+
+.sg-hero p {
+  color: var(--md-default-fg-color--light);
+  font-size: 1.05rem;
+}
+
+.sg-eyebrow {
+  color: var(--md-primary-fg-color) !important;
+  font-size: 0.78rem !important;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.6rem;
+  text-transform: uppercase;
+}
+
+.sg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-top: 1.2rem;
+}
+
+.sg-button {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 0.35rem;
+  font-weight: 700;
+  padding: 0.68rem 0.9rem;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.sg-button:hover {
+  opacity: 0.88;
+  transform: translateY(-1px);
+}
+
+.sg-button-primary {
+  background: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color) !important;
+}
+
+.sg-button-secondary {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  color: var(--md-default-fg-color) !important;
+}
+
+.sg-panel {
+  background: color-mix(in srgb, var(--md-primary-fg-color) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--md-primary-fg-color) 28%, transparent);
+  border-radius: 0.45rem;
+  padding: 1rem;
+}
+
+.sg-panel-title {
+  color: var(--md-default-fg-color) !important;
+  font-size: 0.82rem !important;
+  font-weight: 800;
+  margin: 0 0 0.7rem;
+}
+
+.sg-panel code {
+  white-space: nowrap;
+}
+
+.sg-proof-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 1.3rem;
+}
+
+.sg-proof-row span {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 999px;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 0.28rem 0.55rem;
+}
+
+.sg-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 1.4rem 0;
+}
+
+.sg-card {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.45rem;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--md-default-bg-color) 92%, var(--md-primary-fg-color) 8%);
+}
+
+.sg-card h3 {
+  margin-top: 0;
+}
+
+.sg-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.4rem 0;
+}
+
+.sg-split > div {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.45rem;
+  padding: 1rem;
+}
+
+.sg-split h3 {
+  margin-top: 0;
+}
+
+@media screen and (max-width: 760px) {
+  .sg-hero {
+    grid-template-columns: 1fr;
+    padding-top: 1rem;
+  }
+
+  .sg-split {
+    grid-template-columns: 1fr;
+  }
+}

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from sentinelguard.core.scanner import AggregatedResult, RiskLevel, ScanResult
+from sentinelguard.core.config import GuardConfig
 from sentinelguard.gateway.config import GatewayConfig, ProviderConfig
 from sentinelguard.gateway.operations import (
     ChatUsage,
@@ -42,6 +43,7 @@ from sentinelguard.gateway.providers import (
     _openai_to_gemini_payload,
 )
 from sentinelguard.gateway.server import _extract_passthrough_text, _is_authorized
+from sentinelguard.gateway.server import create_gateway_app
 
 
 class TestGatewayConfig:
@@ -248,6 +250,70 @@ class TestGatewayClientAuth:
         assert auth.client.name == "research-team"
         assert auth.client.team_id == "research"
         assert not authenticate_gateway_request({"authorization": "Bearer bad"}, config).allowed
+
+
+class TestGatewayStableManagementApi:
+    def test_gateway_v1_contract_and_management_endpoints(self):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_minimal(),
+            gateway_config=GatewayConfig.from_dict(
+                {
+                    "virtual_keys": [
+                        {
+                            "name": "local-dev",
+                            "key": "sg-test",
+                            "allowed_models": ["fast-chat"],
+                        }
+                    ],
+                    "providers": [
+                        {
+                            "name": "openai-fast",
+                            "provider": "openai",
+                            "model_name": "fast-chat",
+                            "upstream_model": "gpt-4o-mini",
+                        }
+                    ],
+                }
+            ),
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        contract = client.get("/gateway/v1/contract").json()
+        assert contract["object"] == "sentinelguard.gateway.contract"
+        assert contract["api_version"] == "v1"
+        assert contract["stability"] == "stable"
+        assert contract["stable_management_endpoints"]["health"] == "/gateway/v1/health"
+        assert "/v1/chat/completions" in contract["openai_compatible_endpoints"]
+
+        health = client.get("/gateway/v1/health").json()
+        assert health["object"] == "sentinelguard.gateway.health"
+        assert health["api_version"] == "v1"
+        assert health["client_auth_enabled"] is True
+
+        routes = client.get("/gateway/v1/routes").json()
+        assert routes["object"] == "sentinelguard.gateway.routes"
+        assert "/gateway/v1/usage" in routes["stable_management_endpoints"]
+        assert "/routes" in routes["compatibility_endpoints"]
+
+        models = client.get("/gateway/v1/models").json()
+        assert models["object"] == "list"
+        assert models["api_version"] == "v1"
+        assert models["data"][0]["id"] == "fast-chat"
+
+        provider_health = client.get("/gateway/v1/provider-health").json()
+        assert provider_health["object"] == "sentinelguard.gateway.provider_health"
+        assert provider_health["api_version"] == "v1"
+        assert provider_health["providers"][0]["name"] == "openai-fast"
+
+        assert client.get("/gateway/v1/usage").status_code == 401
+        usage = client.get(
+            "/gateway/v1/usage",
+            headers={"authorization": "Bearer sg-test"},
+        ).json()
+        assert usage["object"] == "sentinelguard.gateway.usage"
+        assert usage["api_version"] == "v1"
+        assert usage["client"]["name"] == "local-dev"
 
     def test_virtual_key_model_allowlist_and_request_budget(self):
         store = GatewayUsageStore()

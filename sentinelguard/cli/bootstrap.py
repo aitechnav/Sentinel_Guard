@@ -9,6 +9,7 @@ from typing import Iterable
 
 import yaml
 
+from sentinelguard import __version__
 from sentinelguard.core.config import GuardConfig
 
 
@@ -31,7 +32,7 @@ def create_project_scaffold(
     *,
     profile: str = "gateway",
     preset: str = "standard",
-    docker_image: str = "sentinelguard/sentinelguard-gateway:latest",
+    docker_image: str = "sentinelguard-gateway:local",
     include_docker: bool = True,
     force: bool = False,
 ) -> InitResult:
@@ -77,6 +78,7 @@ def _gateway_files(
     yield "sentinelguard-gateway.yaml", _gateway_config_yaml()
     yield ".env.example", _env_example()
     if include_docker:
+        yield "Dockerfile.sentinelguard", _dockerfile()
         yield "docker-compose.sentinelguard.yml", _docker_compose(docker_image)
 
 
@@ -191,10 +193,13 @@ def _gateway_config_yaml() -> str:
 
 def _env_example() -> str:
     return dedent(
-        """\
+        f"""\
         # Copy this file to .env for Docker Compose, or export these variables in your shell.
         # Never commit real provider keys.
 
+        SENTINELGUARD_VERSION={__version__}
+        SENTINELGUARD_EXTRAS=gateway,monitoring
+        SENTINELGUARD_IMAGE=sentinelguard-gateway:local
         SENTINELGUARD_GATEWAY_API_KEY=change-me-local-gateway-token
         SENTINELGUARD_AUDIT_SALT=change-me-random-audit-salt
         SENTINELGUARD_GATEWAY_PORT=8080
@@ -213,11 +218,45 @@ def _env_example() -> str:
     )
 
 
+def _dockerfile() -> str:
+    return dedent(
+        f"""\
+        FROM python:3.11-slim
+
+        ARG SENTINELGUARD_VERSION={__version__}
+        ARG SENTINELGUARD_EXTRAS=gateway,monitoring
+
+        ENV PYTHONDONTWRITEBYTECODE=1 \\
+            PYTHONUNBUFFERED=1 \\
+            PIP_NO_CACHE_DIR=1
+
+        WORKDIR /app
+
+        RUN python -m pip install --upgrade pip \\
+            && python -m pip install "sentinelguard[${{SENTINELGUARD_EXTRAS}}]==${{SENTINELGUARD_VERSION}}"
+
+        EXPOSE 8080
+
+        HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \\
+            CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/gateway/v1/health', timeout=3)"
+
+        ENTRYPOINT ["sentinelguard"]
+        CMD ["gateway", "--host", "0.0.0.0", "--port", "8080"]
+        """
+    )
+
+
 def _docker_compose(docker_image: str) -> str:
     return dedent(
         f"""\
         services:
           sentinelguard-gateway:
+            build:
+              context: .
+              dockerfile: Dockerfile.sentinelguard
+              args:
+                SENTINELGUARD_VERSION: ${{SENTINELGUARD_VERSION:-{__version__}}}
+                SENTINELGUARD_EXTRAS: ${{SENTINELGUARD_EXTRAS:-gateway,monitoring}}
             image: ${{SENTINELGUARD_IMAGE:-{docker_image}}}
             ports:
               - "${{SENTINELGUARD_GATEWAY_PORT:-8080}}:8080"
@@ -308,8 +347,12 @@ def _readme(profile: str) -> str:
         ```bash
         cp .env.example .env
         # Edit .env and set at least one upstream provider key.
-        docker compose -f docker-compose.sentinelguard.yml up
+        docker compose -f docker-compose.sentinelguard.yml up --build
         ```
+
+        The generated Docker setup builds from the SentinelGuard PyPI package
+        using the version in `.env`. If you are testing unreleased local source,
+        build from the repository Dockerfile instead.
 
         ## Point Apps Or IDEs To The Gateway
 
@@ -326,9 +369,10 @@ def _readme(profile: str) -> str:
 
         ```bash
         curl http://localhost:8080/health
-        curl http://localhost:8080/v1/models
-        curl http://localhost:8080/routes
-        curl http://localhost:8080/gateway/provider-health
+        curl http://localhost:8080/gateway/v1/contract
+        curl http://localhost:8080/gateway/v1/models
+        curl http://localhost:8080/gateway/v1/routes
+        curl http://localhost:8080/gateway/v1/provider-health
         ```
 
         Add `.env` and `.sentinelguard/` to your project `.gitignore` before
