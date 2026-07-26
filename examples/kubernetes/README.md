@@ -9,8 +9,8 @@ gateway so prompts and model responses are scanned centrally.
 Build the default gateway image:
 
 ```bash
-docker build -t registry.example.com/sentinelguard-gateway:0.0.8 .
-docker push registry.example.com/sentinelguard-gateway:0.0.8
+docker build -t registry.example.com/sentinelguard-gateway:0.0.9 .
+docker push registry.example.com/sentinelguard-gateway:0.0.9
 ```
 
 For local Hugging Face model-backed detection inside the gateway image:
@@ -18,8 +18,8 @@ For local Hugging Face model-backed detection inside the gateway image:
 ```bash
 docker build \
   --build-arg SENTINELGUARD_EXTRAS=gateway,monitoring,models \
-  -t registry.example.com/sentinelguard-gateway:0.0.8-models .
-docker push registry.example.com/sentinelguard-gateway:0.0.8-models
+  -t registry.example.com/sentinelguard-gateway:0.0.9-models .
+docker push registry.example.com/sentinelguard-gateway:0.0.9-models
 ```
 
 Update `deployment.yaml` to use your pushed image.
@@ -42,11 +42,16 @@ kubectl create secret generic sentinelguard-gateway-secrets \
   --from-literal=SENTINELGUARD_AUDIT_SALT="$(openssl rand -hex 32)"
 ```
 
-For Anthropic or Gemini, add the matching key:
+For Anthropic, Gemini, DeepSeek, Mistral, MiniMax, or Hugging Face, add the
+matching key:
 
 ```bash
 --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY"
+--from-literal=DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
+--from-literal=MISTRAL_API_KEY="$MISTRAL_API_KEY"
+--from-literal=MINIMAX_API_KEY="$MINIMAX_API_KEY"
+--from-literal=HF_TOKEN="$HF_TOKEN"
 ```
 
 You can also copy `secret.example.yaml`, replace the placeholder values, and

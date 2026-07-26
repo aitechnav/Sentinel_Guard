@@ -5,14 +5,115 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import time
+from dataclasses import dataclass, replace
+from itertools import groupby
 from typing import Any, Iterator, Mapping, Optional, Tuple
 
-from sentinelguard.gateway.config import GatewayConfig
+from sentinelguard.gateway.config import GatewayConfig, ProviderConfig
 
 OPENAI_DEFAULT_UPSTREAM = "https://api.openai.com/v1"
 ANTHROPIC_DEFAULT_UPSTREAM = "https://api.anthropic.com/v1"
 GEMINI_DEFAULT_UPSTREAM = "https://generativelanguage.googleapis.com/v1beta"
+
+OPENAI_COMPATIBLE_DEFAULTS = {
+    "deepseek": ("https://api.deepseek.com", ["DEEPSEEK_API_KEY", "OPENAI_API_KEY"]),
+    "huggingface": (
+        "https://router.huggingface.co/v1",
+        ["HF_TOKEN", "HUGGINGFACE_API_KEY", "OPENAI_API_KEY"],
+    ),
+    "minimax": ("https://api.minimaxi.com/v1", ["MINIMAX_API_KEY", "OPENAI_API_KEY"]),
+    "mistral": ("https://api.mistral.ai/v1", ["MISTRAL_API_KEY", "OPENAI_API_KEY"]),
+    "ollama": ("http://localhost:11434/v1", ["OLLAMA_API_KEY"]),
+}
+
+PROVIDER_ALIASES = {
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+    "deep-seek": "deepseek",
+    "deepseek": "deepseek",
+    "gemini": "gemini",
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "hf": "huggingface",
+    "hugging-face": "huggingface",
+    "huggingface": "huggingface",
+    "minimax": "minimax",
+    "mini-max": "minimax",
+    "minimaxi": "minimax",
+    "mistral": "mistral",
+    "ollama": "ollama",
+    "openai": "openai",
+    "openai-compatible": "openai-compatible",
+}
+
+_ROUTER_LOCK = threading.Lock()
+_ROUTER_COUNTERS: dict[tuple[int, str], int] = {}
+
+
+@dataclass(frozen=True)
+class ProviderAttempt:
+    """One provider attempt made by the gateway router."""
+
+    name: str
+    provider: str
+    status_code: Optional[int] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "provider": self.provider,
+            "status_code": self.status_code,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class ForwardResult:
+    """Provider forwarding result with routing metadata."""
+
+    status_code: int
+    body: dict
+    provider_name: str
+    provider: str
+    attempts: tuple[ProviderAttempt, ...] = ()
+
+
+@dataclass
+class ProviderRuntimeStats:
+    """Process-local runtime health and routing stats for one provider."""
+
+    inflight: int = 0
+    attempts: int = 0
+    successes: int = 0
+    failures: int = 0
+    avg_latency_ms: Optional[float] = None
+    last_status_code: Optional[int] = None
+    last_error: Optional[str] = None
+    unhealthy_until: float = 0.0
+
+    def to_dict(self, provider: ProviderConfig) -> dict[str, Any]:
+        now = time.time()
+        return {
+            "name": provider.name,
+            "provider": _normalize_provider(provider.provider),
+            "model_name": provider.model_name,
+            "upstream_model": provider.upstream_model,
+            "healthy": self.unhealthy_until <= now,
+            "unhealthy_until": int(self.unhealthy_until) if self.unhealthy_until > now else 0,
+            "inflight": self.inflight,
+            "attempts": self.attempts,
+            "successes": self.successes,
+            "failures": self.failures,
+            "avg_latency_ms": self.avg_latency_ms,
+            "last_status_code": self.last_status_code,
+            "last_error": self.last_error,
+        }
+
+
+_PROVIDER_STATE: dict[str, ProviderRuntimeStats] = {}
 
 
 def extract_last_user_text(messages: list) -> str:
@@ -137,6 +238,125 @@ async def forward_chat_completion(
     config: GatewayConfig,
 ) -> Tuple[int, dict]:
     """Forward a chat completion request to the configured upstream provider."""
+    return await _forward_chat_completion_single(payload, incoming_headers, config)
+
+
+async def forward_chat_completion_with_failover(
+    payload: Mapping[str, Any],
+    incoming_headers: Mapping[str, str],
+    config: GatewayConfig,
+    *,
+    route_constraint: str = "any",
+) -> ForwardResult:
+    """Forward a chat completion request using provider-pool failover.
+
+    Only provider or network failures are eligible for failover. Policy blocks
+    happen before this function is called, so blocked prompts are never retried
+    against another provider.
+    """
+    requested_model = str(payload.get("model") or "")
+    candidates = select_provider_sequence(
+        config,
+        route_constraint=route_constraint,
+        requested_model=requested_model,
+    )
+    if not candidates:
+        body = {
+            "error": {
+                "message": "No eligible upstream provider for SentinelGuard route",
+                "type": "sentinelguard_no_eligible_provider",
+                "route_constraint": route_constraint,
+            }
+        }
+        return ForwardResult(
+            status_code=503,
+            body=body,
+            provider_name="none",
+            provider="none",
+            attempts=(),
+        )
+
+    attempts: list[ProviderAttempt] = []
+    last_body: dict = {}
+    last_status = 502
+
+    for candidate in candidates:
+        candidate_config = _gateway_config_for_provider(config, candidate)
+        provider = effective_provider(candidate_config)
+        started_at = _mark_provider_start(candidate)
+        try:
+            candidate_payload = _payload_for_provider(payload, candidate, requested_model)
+            status_code, body = await _forward_chat_completion_single(
+                candidate_payload,
+                incoming_headers,
+                candidate_config,
+            )
+        except Exception as exc:
+            _mark_provider_end(
+                candidate,
+                started_at,
+                config,
+                status_code=None,
+                error=exc.__class__.__name__,
+            )
+            attempts.append(
+                ProviderAttempt(
+                    name=candidate.name,
+                    provider=provider,
+                    error=exc.__class__.__name__,
+                )
+            )
+            last_status = 502
+            last_body = {
+                "error": {
+                    "message": str(exc),
+                    "type": "sentinelguard_upstream_exception",
+                }
+            }
+            if not config.fallback_enabled:
+                break
+            continue
+
+        attempts.append(
+            ProviderAttempt(
+                name=candidate.name,
+                provider=provider,
+                status_code=status_code,
+            )
+        )
+        _mark_provider_end(candidate, started_at, config, status_code=status_code)
+        if (
+            status_code < 400
+            or not config.fallback_enabled
+            or not _is_failover_status(status_code, config)
+        ):
+            return ForwardResult(
+                status_code=status_code,
+                body=body,
+                provider_name=candidate.name,
+                provider=provider,
+                attempts=tuple(attempts),
+            )
+
+        last_status = status_code
+        last_body = body
+
+    last_attempt = attempts[-1] if attempts else None
+    return ForwardResult(
+        status_code=last_status,
+        body=last_body,
+        provider_name=last_attempt.name if last_attempt else "none",
+        provider=last_attempt.provider if last_attempt else "none",
+        attempts=tuple(attempts),
+    )
+
+
+async def _forward_chat_completion_single(
+    payload: Mapping[str, Any],
+    incoming_headers: Mapping[str, str],
+    config: GatewayConfig,
+) -> Tuple[int, dict]:
+    """Forward a chat completion request to one configured provider."""
     httpx = _load_httpx()
     provider = effective_provider(config)
 
@@ -149,12 +369,296 @@ async def forward_chat_completion(
 
 def effective_provider(config: GatewayConfig) -> str:
     """Return the adapter provider name used by the gateway."""
-    provider = (config.provider or "openai").strip().lower().replace("_", "-")
-    if provider in {"anthropic", "claude"}:
-        return "anthropic"
-    if provider in {"gemini", "google", "google-gemini"}:
-        return "gemini"
-    return "openai"
+    return _normalize_provider(config.provider)
+
+
+def configured_providers(config: GatewayConfig) -> list[ProviderConfig]:
+    """Return configured provider candidates, preserving single-provider compatibility."""
+    if config.providers:
+        return [provider for provider in config.providers if provider.enabled]
+    return [
+        ProviderConfig(
+            name=effective_provider(config),
+            provider=config.provider,
+            model_name=None,
+            upstream_model=None,
+            upstream_url=config.upstream_url,
+            api_key_env=config.api_key_env,
+            api_key=config.api_key,
+            enabled=True,
+            private=False,
+            priority=100,
+            weight=1,
+            timeout_seconds=config.timeout_seconds,
+        )
+    ]
+
+
+def select_provider_sequence(
+    config: GatewayConfig,
+    *,
+    route_constraint: str = "any",
+    requested_model: Optional[str] = None,
+) -> list[ProviderConfig]:
+    """Return ordered provider attempts for one request.
+
+    Providers are sorted by priority, and providers with the same priority use
+    a small weighted rotation for the first attempt while preserving a unique
+    fallback sequence.
+    """
+    providers = configured_providers(config)
+    if route_constraint == "private":
+        providers = [provider for provider in providers if provider.private]
+    if requested_model:
+        matched = [
+            provider
+            for provider in providers
+            if _provider_matches_requested_model(provider, requested_model)
+        ]
+        has_model_bound_provider = any(provider.model_name for provider in providers)
+        if matched or has_model_bound_provider:
+            providers = matched
+    if not providers:
+        return []
+    available_providers = [
+        provider for provider in providers if _provider_available(provider, config)
+    ]
+    if available_providers:
+        providers = available_providers
+
+    ordered: list[ProviderConfig] = []
+    sorted_providers = sorted(
+        providers,
+        key=lambda provider: (int(provider.priority), provider.name),
+    )
+    for _priority, group_iter in groupby(sorted_providers, key=lambda p: int(p.priority)):
+        group = list(group_iter)
+        ordered.extend(
+            _route_group(
+                group,
+                config.routing_strategy,
+                f"{route_constraint}:{requested_model or '*'}",
+            )
+        )
+    return ordered
+
+
+def available_gateway_models(config: GatewayConfig) -> list[dict[str, Any]]:
+    """Return OpenAI-compatible model metadata for configured gateway routes."""
+    models: dict[str, dict[str, Any]] = {}
+    for provider in configured_providers(config):
+        model_name = provider.model_name or provider.upstream_model or "*"
+        models.setdefault(
+            model_name,
+            {
+                "id": model_name,
+                "object": "model",
+                "owned_by": "sentinelguard",
+                "providers": [],
+            },
+        )
+        models[model_name]["providers"].append(
+            {
+                "name": provider.name,
+                "provider": _normalize_provider(provider.provider),
+                "upstream_model": provider.upstream_model,
+                "private": provider.private,
+                "priority": provider.priority,
+                "weight": provider.weight,
+            }
+        )
+    return list(models.values())
+
+
+def provider_health_snapshot(config: GatewayConfig) -> list[dict[str, Any]]:
+    """Return process-local provider health/routing stats."""
+    with _ROUTER_LOCK:
+        return [
+            _PROVIDER_STATE.get(provider.name, ProviderRuntimeStats()).to_dict(provider)
+            for provider in configured_providers(config)
+        ]
+
+
+def _normalize_provider(provider: str) -> str:
+    provider = (provider or "openai").strip().lower().replace("_", "-")
+    return PROVIDER_ALIASES.get(provider, "openai-compatible")
+
+
+def _weighted_rotation(
+    providers: list[ProviderConfig],
+    route_constraint: str,
+) -> list[ProviderConfig]:
+    expanded: list[ProviderConfig] = []
+    for provider in providers:
+        weight = max(1, min(100, int(provider.weight or 1)))
+        expanded.extend([provider] * weight)
+    if not expanded:
+        return providers
+
+    key = (hash(tuple(provider.name for provider in providers)), route_constraint)
+    with _ROUTER_LOCK:
+        counter = _ROUTER_COUNTERS.get(key, 0)
+        _ROUTER_COUNTERS[key] = counter + 1
+
+    rotated = expanded[counter % len(expanded) :] + expanded[: counter % len(expanded)]
+    unique: list[ProviderConfig] = []
+    seen = set()
+    for provider in rotated:
+        if provider.name in seen:
+            continue
+        unique.append(provider)
+        seen.add(provider.name)
+    return unique
+
+
+def _route_group(
+    providers: list[ProviderConfig],
+    strategy: str,
+    route_key: str,
+) -> list[ProviderConfig]:
+    normalized = (strategy or "priority").strip().lower().replace("_", "-")
+    if normalized in {"least-busy", "least-busy-routing"}:
+        return sorted(providers, key=lambda provider: (_inflight(provider), provider.name))
+    if normalized in {"latency", "latency-based", "latency-based-routing"}:
+        return sorted(providers, key=lambda provider: (_avg_latency(provider), provider.name))
+    if normalized in {"cost", "cost-based", "cost-based-routing"}:
+        return sorted(providers, key=lambda provider: (_estimated_cost(provider), provider.name))
+    return _weighted_rotation(providers, route_key)
+
+
+def _provider_available(provider: ProviderConfig, config: GatewayConfig) -> bool:
+    state = _provider_state(provider.name)
+    if provider.max_parallel_requests is not None and state.inflight >= provider.max_parallel_requests:
+        return False
+    if config.health_check_enabled and state.unhealthy_until > time.time():
+        return False
+    return True
+
+
+def _mark_provider_start(provider: ProviderConfig) -> float:
+    with _ROUTER_LOCK:
+        state = _provider_state(provider.name)
+        state.inflight += 1
+        state.attempts += 1
+    return time.perf_counter()
+
+
+def _mark_provider_end(
+    provider: ProviderConfig,
+    started_at: float,
+    config: GatewayConfig,
+    *,
+    status_code: Optional[int] = None,
+    error: Optional[str] = None,
+) -> None:
+    latency_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    with _ROUTER_LOCK:
+        state = _provider_state(provider.name)
+        state.inflight = max(0, state.inflight - 1)
+        state.avg_latency_ms = (
+            latency_ms
+            if state.avg_latency_ms is None
+            else (state.avg_latency_ms * 0.8 + latency_ms * 0.2)
+        )
+        state.last_status_code = status_code
+        state.last_error = error
+        failed = error is not None or (
+            isinstance(status_code, int) and _is_failover_status(status_code, config)
+        )
+        if failed:
+            state.failures += 1
+            if config.health_check_enabled:
+                state.unhealthy_until = time.time() + max(1, int(config.unhealthy_ttl_seconds))
+        else:
+            state.successes += 1
+            state.unhealthy_until = 0.0
+
+
+def _provider_state(provider_name: str) -> ProviderRuntimeStats:
+    return _PROVIDER_STATE.setdefault(provider_name, ProviderRuntimeStats())
+
+
+def _inflight(provider: ProviderConfig) -> int:
+    return _provider_state(provider.name).inflight
+
+
+def _avg_latency(provider: ProviderConfig) -> float:
+    value = _provider_state(provider.name).avg_latency_ms
+    return value if value is not None else float("inf")
+
+
+def _estimated_cost(provider: ProviderConfig) -> float:
+    input_cost = provider.input_cost_per_token
+    output_cost = provider.output_cost_per_token
+    if input_cost is None and output_cost is None:
+        return float("inf")
+    return float(input_cost or 0.0) + float(output_cost or 0.0)
+
+
+def _gateway_config_for_provider(
+    config: GatewayConfig,
+    provider: ProviderConfig,
+) -> GatewayConfig:
+    return replace(
+        config,
+        provider=provider.provider,
+        upstream_url=provider.upstream_url,
+        api_key_env=provider.api_key_env,
+        api_key=provider.api_key,
+        timeout_seconds=(
+            provider.timeout_seconds
+            if provider.timeout_seconds is not None
+            else config.timeout_seconds
+        ),
+        providers=[],
+    )
+
+
+def _payload_for_provider(
+    payload: Mapping[str, Any],
+    provider: ProviderConfig,
+    requested_model: str,
+) -> dict:
+    updated = dict(payload)
+    upstream_model = _upstream_model_for_provider(provider, requested_model)
+    if upstream_model:
+        updated["model"] = upstream_model
+    return updated
+
+
+def _upstream_model_for_provider(
+    provider: ProviderConfig,
+    requested_model: str,
+) -> Optional[str]:
+    if not provider.upstream_model:
+        return None
+    if (
+        provider.model_name
+        and provider.model_name.endswith("*")
+        and provider.upstream_model.endswith("*")
+    ):
+        return provider.upstream_model[:-1] + requested_model[len(provider.model_name[:-1]) :]
+    return provider.upstream_model
+
+
+def _provider_matches_requested_model(provider: ProviderConfig, requested_model: str) -> bool:
+    if not provider.model_name:
+        return True
+    return _model_matches(provider.model_name, requested_model)
+
+
+def _model_matches(pattern: str, model: str) -> bool:
+    if pattern == "*":
+        return True
+    if pattern.endswith("/*"):
+        return model.startswith(pattern[:-1])
+    if pattern.endswith("*"):
+        return model.startswith(pattern[:-1])
+    return pattern == model
+
+
+def _is_failover_status(status_code: int, config: GatewayConfig) -> bool:
+    return status_code in set(config.failover_status_codes)
 
 
 def effective_upstream_url(config: GatewayConfig) -> str:
@@ -166,6 +670,8 @@ def effective_upstream_url(config: GatewayConfig) -> str:
         return ANTHROPIC_DEFAULT_UPSTREAM
     if provider == "gemini" and (not url or url == OPENAI_DEFAULT_UPSTREAM):
         return GEMINI_DEFAULT_UPSTREAM
+    if provider in OPENAI_COMPATIBLE_DEFAULTS and (not url or url == OPENAI_DEFAULT_UPSTREAM):
+        return OPENAI_COMPATIBLE_DEFAULTS[provider][0]
     return url or OPENAI_DEFAULT_UPSTREAM
 
 
@@ -177,6 +683,8 @@ def effective_api_key_env(config: GatewayConfig) -> str:
         return "ANTHROPIC_API_KEY"
     if provider == "gemini" and configured == "OPENAI_API_KEY":
         return "GEMINI_API_KEY"
+    if provider in OPENAI_COMPATIBLE_DEFAULTS and configured == "OPENAI_API_KEY":
+        return OPENAI_COMPATIBLE_DEFAULTS[provider][1][0]
     return configured or "OPENAI_API_KEY"
 
 
@@ -235,9 +743,7 @@ async def _post_json(
     try:
         response_body = response.json()
     except ValueError:
-        response_body = {
-            "error": {"message": response.text, "type": "upstream_non_json"}
-        }
+        response_body = {"error": {"message": response.text, "type": "upstream_non_json"}}
     return response.status_code, response_body
 
 
@@ -326,9 +832,7 @@ def _anthropic_to_openai_response(
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": text},
-                "finish_reason": _anthropic_finish_reason(
-                    response_json.get("stop_reason")
-                ),
+                "finish_reason": _anthropic_finish_reason(response_json.get("stop_reason")),
             }
         ],
         "usage": {
@@ -455,10 +959,7 @@ def _gemini_generation_config(payload: Mapping[str, Any]) -> dict:
         generation_config["candidateCount"] = payload["n"]
 
     response_format = payload.get("response_format")
-    if (
-        isinstance(response_format, Mapping)
-        and response_format.get("type") == "json_object"
-    ):
+    if isinstance(response_format, Mapping) and response_format.get("type") == "json_object":
         generation_config["responseMimeType"] = "application/json"
 
     return generation_config
@@ -589,7 +1090,7 @@ def _build_gemini_headers(
 def _bearer_token(value: str) -> str:
     prefix = "Bearer "
     if value.startswith(prefix):
-        return value[len(prefix):]
+        return value[len(prefix) :]
     return value
 
 
@@ -616,6 +1117,11 @@ def _api_key_env_names(config: GatewayConfig) -> list:
         if configured and configured != "OPENAI_API_KEY":
             return [configured]
         return ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"]
+
+    if provider in OPENAI_COMPATIBLE_DEFAULTS:
+        if configured and configured != "OPENAI_API_KEY":
+            return [configured]
+        return OPENAI_COMPATIBLE_DEFAULTS[provider][1]
 
     return [configured or "OPENAI_API_KEY"]
 

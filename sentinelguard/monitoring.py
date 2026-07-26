@@ -53,6 +53,16 @@ if PROMETHEUS_AVAILABLE:
         "Total SentinelGuard scanner detections.",
         ["direction", "scanner", "category", "risk_level", "action"],
     )
+    PROVIDER_ATTEMPTS = Counter(
+        "sentinelguard_provider_attempts_total",
+        "Total SentinelGuard upstream provider attempts.",
+        ["provider", "result"],
+    )
+    PROVIDER_FAILOVERS = Counter(
+        "sentinelguard_provider_failovers_total",
+        "Total SentinelGuard provider failover events.",
+        ["from_provider", "to_provider"],
+    )
     SCAN_LATENCY = Histogram(
         "sentinelguard_scan_latency_seconds",
         "SentinelGuard scan latency in seconds.",
@@ -63,6 +73,8 @@ else:
     GATEWAY_REQUESTS = None
     SCANS = None
     DETECTIONS = None
+    PROVIDER_ATTEMPTS = None
+    PROVIDER_FAILOVERS = None
     SCAN_LATENCY = None
 
 
@@ -127,6 +139,25 @@ def record_scan(direction: str, result: AggregatedResult) -> None:
         ).inc()
 
 
+def record_provider_attempts(attempts: object) -> None:
+    """Record provider attempts and failovers from a routed gateway request."""
+    if PROVIDER_ATTEMPTS is None or PROVIDER_FAILOVERS is None:
+        return
+
+    attempts_list = list(attempts or [])
+    for attempt in attempts_list:
+        PROVIDER_ATTEMPTS.labels(
+            provider=getattr(attempt, "provider", "unknown"),
+            result=_attempt_result(attempt),
+        ).inc()
+
+    for previous, current in zip(attempts_list, attempts_list[1:]):
+        PROVIDER_FAILOVERS.labels(
+            from_provider=getattr(previous, "provider", "unknown"),
+            to_provider=getattr(current, "provider", "unknown"),
+        ).inc()
+
+
 def _safe_action(action: Optional[str]) -> str:
     if not action:
         return "block"
@@ -134,3 +165,12 @@ def _safe_action(action: Optional[str]) -> str:
     if normalized in {"block", "warn", "allow", "sanitize", "redact"}:
         return normalized
     return "other"
+
+
+def _attempt_result(attempt: object) -> str:
+    if getattr(attempt, "error", None):
+        return "exception"
+    status_code = getattr(attempt, "status_code", None)
+    if isinstance(status_code, int) and status_code < 400:
+        return "success"
+    return "error"

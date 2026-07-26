@@ -13,9 +13,7 @@ from typing import Any, ClassVar, Dict, Optional
 from sentinelguard.core.scanner import OutputScanner, RiskLevel, ScanResult, register_scanner
 
 SENSITIVE_PATTERNS = {
-    "internal_paths": re.compile(
-        r"(?:/home/\w+|/var/|/etc/|/usr/local|C:\\Users\\|C:\\Windows)"
-    ),
+    "internal_paths": re.compile(r"(?:/home/\w+|/var/|/etc/|/usr/local|C:\\Users\\|C:\\Windows)"),
     "internal_ips": re.compile(
         r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b"
     ),
@@ -32,7 +30,8 @@ SENSITIVE_PATTERNS = {
         r"(?i)\b(?:gpt-[34]|claude|llama|mistral|gemini)\s*(?:turbo|pro|ultra|haiku|sonnet|opus)?\b",
     ),
     "environment_vars": re.compile(
-        r"(?i)(?:ENV|ENVIRONMENT)[_\s]*(?:VAR|VARIABLE)?[:\s=]+\w+",
+        r"\b[A-Z][A-Z0-9_]{2,}\s*[:=]\s*[^\s,;]+|"
+        r"(?i:\b(?:ENV|ENVIRONMENT)[_\s]*(?:VAR|VARIABLE)\s*[:=]\s*[^\s,;]+)",
     ),
     "config_data": re.compile(
         r"(?i)(?:config|configuration|settings)\s*[:{=]\s*\{",
@@ -63,9 +62,7 @@ class SensitiveScanner(OutputScanner):
         super().__init__(threshold=threshold, **kwargs)
         self._extra_patterns = {}
         if patterns:
-            self._extra_patterns = {
-                name: re.compile(pattern) for name, pattern in patterns.items()
-            }
+            self._extra_patterns = {name: re.compile(pattern) for name, pattern in patterns.items()}
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         found: Dict[str, int] = {}
@@ -87,9 +84,14 @@ class SensitiveScanner(OutputScanner):
 
         # Weight by sensitivity
         weights = {
-            "database_info": 1.0, "system_prompts": 0.9, "internal_ips": 0.8,
-            "environment_vars": 0.8, "config_data": 0.7, "stack_traces": 0.7,
-            "internal_paths": 0.6, "model_info": 0.4,
+            "database_info": 1.0,
+            "system_prompts": 0.9,
+            "internal_ips": 0.8,
+            "environment_vars": 0.8,
+            "config_data": 0.7,
+            "stack_traces": 0.7,
+            "internal_paths": 0.6,
+            "model_info": 0.4,
         }
 
         max_score = 0.0

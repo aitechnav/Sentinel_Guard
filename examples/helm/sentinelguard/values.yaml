@@ -1,0 +1,59 @@
+replicaCount: 2
+
+image:
+  repository: sentinelguard-gateway
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+env:
+  OPENAI_API_KEY: ""
+  ANTHROPIC_API_KEY: ""
+  GEMINI_API_KEY: ""
+  SENTINELGUARD_GATEWAY_API_KEY: ""
+  SENTINELGUARD_AUDIT_SALT: ""
+
+gatewayConfig: |
+  gateway:
+    enabled: true
+    provider: openai
+    api_key_env: OPENAI_API_KEY
+    client_api_key_env: SENTINELGUARD_GATEWAY_API_KEY
+    routing_strategy: priority
+    state_backend: sqlite
+    state_path: /data/sentinelguard_gateway.sqlite3
+    cache_enabled: true
+    cache_backend: sqlite
+    cache_ttl_seconds: 300
+    metrics_enabled: true
+    audit_enabled: true
+    providers:
+      - name: openai-fast
+        provider: openai
+        model_name: fast-chat
+        upstream_model: gpt-4o-mini
+        api_key_env: OPENAI_API_KEY
+        priority: 10
+        weight: 1
+
+persistence:
+  enabled: true
+  size: 5Gi
+  mountPath: /data

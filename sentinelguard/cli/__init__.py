@@ -6,6 +6,7 @@ configuration, and running the API server.
 Usage:
     sentinelguard scan prompt "Your text here"
     sentinelguard scan output "LLM output here"
+    sentinelguard init
     sentinelguard serve --port 8000
     sentinelguard gateway --provider openai --port 8080
     sentinelguard gateway --provider anthropic --port 8080
@@ -28,63 +29,81 @@ def main(argv: Optional[List[str]] = None) -> int:
         prog="sentinelguard",
         description="SentinelGuard - LLM Security & Guardrails Framework",
     )
-    parser.add_argument(
-        "--version", action="store_true", help="Show version"
-    )
+    parser.add_argument("--version", action="store_true", help="Show version")
 
     subparsers = parser.add_subparsers(dest="command")
 
+    # ── init command ──
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Create starter files for library or gateway use",
+    )
+    init_parser.add_argument(
+        "--profile",
+        choices=["gateway", "library"],
+        default="gateway",
+        help="Setup profile to generate",
+    )
+    init_parser.add_argument(
+        "--preset",
+        choices=["minimal", "standard", "strict"],
+        default="standard",
+        help="Scanner configuration preset",
+    )
+    init_parser.add_argument(
+        "--output-dir",
+        "--dir",
+        default=".",
+        help="Directory where starter files should be created",
+    )
+    init_parser.add_argument(
+        "--docker-image",
+        default="sentinelguard/sentinelguard-gateway:latest",
+        help="Docker image name written into docker-compose.sentinelguard.yml",
+    )
+    init_parser.add_argument(
+        "--without-docker",
+        action="store_true",
+        help="Do not create docker-compose.sentinelguard.yml",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing generated files",
+    )
+
     # ── scan command ──
     scan_parser = subparsers.add_parser("scan", help="Scan text for security issues")
-    scan_parser.add_argument(
-        "type", choices=["prompt", "output"], help="Type of scan"
-    )
+    scan_parser.add_argument("type", choices=["prompt", "output"], help="Type of scan")
     scan_parser.add_argument("text", help="Text to scan")
-    scan_parser.add_argument(
-        "--config", type=str, help="Path to config YAML file"
-    )
+    scan_parser.add_argument("--config", type=str, help="Path to config YAML file")
     scan_parser.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
-    scan_parser.add_argument(
-        "--threshold", type=float, help="Override threshold"
-    )
+    scan_parser.add_argument("--threshold", type=float, help="Override threshold")
 
     # ── serve command ──
     serve_parser = subparsers.add_parser("serve", help="Start API server")
-    serve_parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to bind to"
-    )
-    serve_parser.add_argument(
-        "--port", type=int, default=8000, help="Port to listen on"
-    )
-    serve_parser.add_argument(
-        "--config", type=str, help="Path to config YAML file"
-    )
-    serve_parser.add_argument(
-        "--reload", action="store_true", help="Enable auto-reload"
-    )
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    serve_parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
+    serve_parser.add_argument("--config", type=str, help="Path to config YAML file")
+    serve_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
 
     # ── gateway command ──
-    gateway_parser = subparsers.add_parser(
-        "gateway", help="Start OpenAI-compatible LLM gateway"
-    )
-    gateway_parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to bind to"
-    )
-    gateway_parser.add_argument(
-        "--port", type=int, default=8080, help="Port to listen on"
-    )
+    gateway_parser = subparsers.add_parser("gateway", help="Start OpenAI-compatible LLM gateway")
+    gateway_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    gateway_parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
     gateway_parser.add_argument(
         "--config", type=str, help="Path to SentinelGuard scanner config YAML"
     )
-    gateway_parser.add_argument(
-        "--gateway-config", type=str, help="Path to gateway config YAML"
-    )
+    gateway_parser.add_argument("--gateway-config", type=str, help="Path to gateway config YAML")
     gateway_parser.add_argument(
         "--provider",
         default=None,
-        help="Gateway provider: openai, anthropic, gemini, or OpenAI-compatible",
+        help=(
+            "Gateway provider: openai, anthropic, gemini, deepseek, mistral, "
+            "minimax, ollama, huggingface, or openai-compatible"
+        ),
     )
     gateway_parser.add_argument(
         "--upstream-url", default=None, help="OpenAI-compatible upstream base URL"
@@ -103,9 +122,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     gateway_parser.add_argument(
         "--sanitize", choices=["true", "false"], default=None, help="Forward sanitized text"
     )
-    gateway_parser.add_argument(
-        "--reload", action="store_true", help="Enable auto-reload"
-    )
+    gateway_parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
 
     # ── config command ──
     config_parser = subparsers.add_parser("config", help="Manage configuration")
@@ -124,18 +141,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ── scanners command ──
     scanners_parser = subparsers.add_parser("scanners", help="List scanners")
-    scanners_parser.add_argument(
-        "action", choices=["list"], help="Action to perform"
-    )
+    scanners_parser.add_argument("action", choices=["list"], help="Action to perform")
 
     args = parser.parse_args(argv)
 
     if args.version:
         from sentinelguard import __version__
+
         print(f"sentinelguard {__version__}")
         return 0
 
-    if args.command == "scan":
+    if args.command == "init":
+        return _handle_init(args)
+    elif args.command == "scan":
         return _handle_scan(args)
     elif args.command == "serve":
         return _handle_serve(args)
@@ -148,6 +166,58 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         parser.print_help()
         return 0
+
+
+def _handle_init(args: argparse.Namespace) -> int:
+    """Handle the init command."""
+    from sentinelguard.cli.bootstrap import create_project_scaffold
+
+    try:
+        result = create_project_scaffold(
+            args.output_dir,
+            profile=args.profile,
+            preset=args.preset,
+            docker_image=args.docker_image,
+            include_docker=not args.without_docker,
+            force=args.force,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print(f"SentinelGuard {result.profile} setup: {result.output_dir}")
+
+    if result.created:
+        print("\nCreated:")
+        for path in result.created:
+            print(f"  - {path.relative_to(result.output_dir)}")
+
+    if result.skipped:
+        print("\nSkipped existing files:")
+        for path in result.skipped:
+            print(f"  - {path.relative_to(result.output_dir)}")
+        print("\nUse --force to overwrite generated files.")
+
+    if result.profile == "gateway":
+        print("\nNext steps:")
+        print('  1. python -m pip install "sentinelguard[gateway,monitoring]"')
+        print("  2. export SENTINELGUARD_GATEWAY_API_KEY=<gateway-token>")
+        print("  3. export OPENAI_API_KEY=<provider-key>")
+        print(
+            "  4. sentinelguard gateway "
+            "--config sentinelguard.yaml "
+            "--gateway-config sentinelguard-gateway.yaml "
+            "--port 8080"
+        )
+        print("\nOpenAI-compatible base URL:")
+        print("  http://localhost:8080/v1")
+    else:
+        print("\nNext steps:")
+        print("  1. python -m pip install sentinelguard")
+        print("  2. from sentinelguard import SentinelGuard")
+        print('  3. guard = SentinelGuard.from_config("sentinelguard.yaml")')
+
+    return 0
 
 
 def _handle_scan(args: argparse.Namespace) -> int:
@@ -238,6 +308,7 @@ def _handle_serve(args: argparse.Namespace) -> int:
         config = GuardConfig.from_yaml(args.config)
 
     from sentinelguard.api.server import create_app
+
     app = create_app(config)
 
     print(f"Starting SentinelGuard API server on {args.host}:{args.port}")
@@ -263,6 +334,7 @@ def _handle_gateway(args: argparse.Namespace) -> int:
     from sentinelguard.core.config import GuardConfig
     from sentinelguard.gateway.config import GatewayConfig
     from sentinelguard.gateway.providers import (
+        configured_providers,
         effective_api_key_env,
         effective_provider,
         effective_upstream_url,
@@ -271,9 +343,7 @@ def _handle_gateway(args: argparse.Namespace) -> int:
 
     guard_config = GuardConfig.from_yaml(args.config) if args.config else None
     gateway_config = (
-        GatewayConfig.from_yaml(args.gateway_config)
-        if args.gateway_config
-        else GatewayConfig()
+        GatewayConfig.from_yaml(args.gateway_config) if args.gateway_config else GatewayConfig()
     )
 
     if args.provider is not None:
@@ -299,6 +369,11 @@ def _handle_gateway(args: argparse.Namespace) -> int:
     print(f"Gateway mode: {mode}")
     print(f"Provider: {effective_provider(gateway_config)}")
     print(f"Upstream: {effective_upstream_url(gateway_config)}")
+    if gateway_config.providers:
+        provider_names = ", ".join(
+            provider.name for provider in configured_providers(gateway_config)
+        )
+        print(f"Provider pool: {provider_names}")
     print(f"API key env: {effective_api_key_env(gateway_config)}")
     print(f"Client auth env: {gateway_config.client_api_key_env or '<disabled>'}")
     print(f"Streaming mode: {gateway_config.streaming_mode}")

@@ -64,6 +64,18 @@ def test_model_status_includes_secrets_classifier():
     assert status["status"] == "not_started"
 
 
+def test_model_status_includes_custom_prompt_guard_alias(monkeypatch):
+    reset_model_cache()
+    monkeypatch.delenv("SENTINELGUARD_DISABLE_MODEL_WARMUP", raising=False)
+    monkeypatch.setattr("sentinelguard.models.model_dependencies_available", lambda: False)
+
+    start_background_warmup([("prompt_injection", "prompt_guard_86m")])
+
+    status = model_status()["prompt_injection:meta-llama/Prompt-Guard-86M"]
+    assert status["model_id"] == "meta-llama/Prompt-Guard-86M"
+    assert status["status"] == "unavailable"
+
+
 def test_sync_resolve_loads_immediately(monkeypatch):
     reset_model_cache()
 
@@ -73,6 +85,18 @@ def test_sync_resolve_loads_immediately(monkeypatch):
     fake_model = FakeModel()
     monkeypatch.delenv("SENTINELGUARD_DISABLE_MODEL_WARMUP", raising=False)
     monkeypatch.setattr("sentinelguard.models.model_dependencies_available", lambda: True)
-    monkeypatch.setattr("sentinelguard.models._load_one", lambda name: fake_model)
+    monkeypatch.setattr("sentinelguard.models._load_one", lambda key, spec: fake_model)
 
     assert resolve_model("bias", True) is fake_model
+
+
+def test_env_model_override_is_used(monkeypatch):
+    reset_model_cache()
+    monkeypatch.delenv("SENTINELGUARD_DISABLE_MODEL_WARMUP", raising=False)
+    monkeypatch.setenv("SENTINELGUARD_PROMPT_INJECTION_MODEL_ID", "prompt_guard_86m")
+    monkeypatch.setattr("sentinelguard.models.model_dependencies_available", lambda: False)
+
+    resolve_model("prompt_injection", True)
+
+    status = model_status()["prompt_injection:meta-llama/Prompt-Guard-86M"]
+    assert status["model_id"] == "meta-llama/Prompt-Guard-86M"

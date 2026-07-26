@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinelguard"
-version = "0.0.8"
+version = "0.0.9"
 description = "A comprehensive, production-ready LLM security and guardrails framework"
 readme = "README.md"
 license = "Apache-2.0"
@@ -43,6 +43,7 @@ dependencies = [
 models = [
     "transformers>=4.30.0",
     "torch>=2.0.0",
+    "huggingface-hub>=0.20.0",
     "numpy>=1.24.0",
     "sentence-transformers>=2.2.0",
 ]
@@ -55,11 +56,14 @@ gateway = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
     "httpx>=0.24.0",
+    "redis>=5.0.0",
+    "websockets>=12.0",
 ]
 monitoring = [
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "prometheus-client>=0.17.0",
+    "langfuse>=2.0.0",
 ]
 dev = [
     "pytest>=7.4.0",
@@ -92,6 +96,13 @@ target-version = ["py39"]
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+
+[tool.ruff.lint]
+# Keep CI focused on correctness rules for now. The wider Ruff rule groups
+# below currently produce hundreds of legacy style findings across the package,
+# so they should be enabled gradually in dedicated cleanup changes.
+select = ["E", "F"]
+ignore = ["BLE", "E501", "I", "PYI", "RUF", "SIM", "UP"]
 
 [tool.mypy]
 python_version = "3.9"

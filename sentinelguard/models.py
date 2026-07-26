@@ -12,7 +12,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +60,22 @@ MODEL_SPECS: Dict[str, ModelSpec] = {
     ),
 }
 
+MODEL_ALIASES: Dict[str, str] = {
+    "prompt_guard_86m": "meta-llama/Prompt-Guard-86M",
+    "prompt-guard-86m": "meta-llama/Prompt-Guard-86M",
+    "meta_prompt_guard_86m": "meta-llama/Prompt-Guard-86M",
+    "prompt_guard_2_22m": "meta-llama/Llama-Prompt-Guard-2-22M",
+    "prompt-guard-2-22m": "meta-llama/Llama-Prompt-Guard-2-22M",
+    "prompt_guard_2_86m": "meta-llama/Llama-Prompt-Guard-2-86M",
+    "prompt-guard-2-86m": "meta-llama/Llama-Prompt-Guard-2-86M",
+}
+
 _MODELS: Dict[str, Any] = {}
-_STATES: Dict[str, ModelState] = {name: ModelState() for name in MODEL_SPECS}
+_STATE_SPECS: Dict[str, ModelSpec] = dict(MODEL_SPECS)
+_STATES: Dict[str, ModelState] = {name: ModelState() for name in _STATE_SPECS}
 _LOCK = threading.RLock()
+
+ModelRequest = Union[str, Tuple[str, Optional[str]]]
 
 
 def normalize_model_mode(value: Any) -> str:
@@ -92,10 +105,14 @@ def warmup_disabled() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def get_model(name: str) -> Optional[Any]:
+def get_model(name: str, model_id: Optional[str] = None) -> Optional[Any]:
     """Return a ready model pipeline, or None if it is not ready."""
+    request = _model_request(name, model_id)
+    if request is None:
+        return None
+    key, _ = request
     with _LOCK:
-        return _MODELS.get(name)
+        return _MODELS.get(key)
 
 
 def model_status() -> Dict[str, Dict[str, Optional[str]]]:
@@ -103,11 +120,11 @@ def model_status() -> Dict[str, Dict[str, Optional[str]]]:
     with _LOCK:
         return {
             name: {
-                "model_id": MODEL_SPECS[name].model_id,
-                "status": state.status,
-                "error": state.error,
+                "model_id": _STATE_SPECS[name].model_id,
+                "status": _STATES.get(name, ModelState()).status,
+                "error": _STATES.get(name, ModelState()).error,
             }
-            for name, state in _STATES.items()
+            for name in _STATE_SPECS
         }
 
 
@@ -119,11 +136,14 @@ def reset_model_cache() -> None:
     """
     with _LOCK:
         _MODELS.clear()
-        for name in MODEL_SPECS:
+        _STATE_SPECS.clear()
+        _STATE_SPECS.update(MODEL_SPECS)
+        _STATES.clear()
+        for name in _STATE_SPECS:
             _STATES[name] = ModelState()
 
 
-def start_background_warmup(model_names: Optional[Iterable[str]] = None) -> None:
+def start_background_warmup(model_names: Optional[Iterable[ModelRequest]] = None) -> None:
     """Start warming optional models in a daemon thread.
 
     This function returns immediately. If dependencies are missing or warmup is
@@ -138,18 +158,20 @@ def start_background_warmup(model_names: Optional[Iterable[str]] = None) -> None
         return
 
     if not model_dependencies_available():
-        _mark_many(names, "unavailable", "Install sentinelguard[models] to enable models")
+        for key, spec in names:
+            _mark_one(key, "unavailable", "Install sentinelguard[models] to enable models", spec)
         return
 
     pending = []
     with _LOCK:
-        for name in names:
-            state = _STATES[name]
+        for key, spec in names:
+            _STATE_SPECS[key] = spec
+            state = _STATES.setdefault(key, ModelState())
             if state.status in {"ready", "loading", "failed", "unavailable", "disabled"}:
                 continue
             state.status = "loading"
             state.error = None
-            pending.append(name)
+            pending.append((key, spec))
 
     if not pending:
         return
@@ -163,39 +185,43 @@ def start_background_warmup(model_names: Optional[Iterable[str]] = None) -> None
     thread.start()
 
 
-def resolve_model(name: str, mode: Any) -> Optional[Any]:
+def resolve_model(name: str, mode: Any, model_id: Optional[str] = None) -> Optional[Any]:
     """Resolve a model for scanner inference without blocking auto mode."""
     normalized = normalize_model_mode(mode)
     if normalized == "disabled":
         return None
 
     if normalized == "auto":
-        model = get_model(name)
+        model = get_model(name, model_id)
         if model is None:
-            start_background_warmup([name])
+            start_background_warmup([(name, model_id)] if model_id else [name])
         return model
 
-    return load_model_now(name)
+    return load_model_now(name, model_id)
 
 
-def load_model_now(name: str) -> Optional[Any]:
+def load_model_now(name: str, model_id: Optional[str] = None) -> Optional[Any]:
     """Load one optional model synchronously."""
+    request = _model_request(name, model_id)
+    if request is None:
+        return None
+    key, spec = request
+
     if warmup_disabled():
-        _mark_one(name, "disabled", None)
+        _mark_one(key, "disabled", None, spec)
         return None
     if not model_dependencies_available():
-        _mark_one(name, "unavailable", "Install sentinelguard[models] to enable models")
+        _mark_one(key, "unavailable", "Install sentinelguard[models] to enable models", spec)
         return None
 
     with _LOCK:
-        if name in _MODELS:
-            return _MODELS[name]
-        if name not in MODEL_SPECS:
-            return None
-        _STATES[name].status = "loading"
-        _STATES[name].error = None
+        if key in _MODELS:
+            return _MODELS[key]
+        _STATE_SPECS[key] = spec
+        _STATES.setdefault(key, ModelState()).status = "loading"
+        _STATES[key].error = None
 
-    return _load_one(name)
+    return _load_one(key, spec)
 
 
 def warmup_for_scanners(scanners: Iterable[Any]) -> None:
@@ -205,20 +231,16 @@ def warmup_for_scanners(scanners: Iterable[Any]) -> None:
         if normalize_model_mode(getattr(scanner, "use_model", False)) == "auto":
             name = getattr(scanner, "scanner_name", "")
             if name in MODEL_SPECS:
-                names.append(name)
+                names.append((name, getattr(scanner, "model_id", None)))
     start_background_warmup(names)
 
 
-def _warmup_many(names: Iterable[str]) -> None:
-    for name in names:
-        _load_one(name)
+def _warmup_many(names: Iterable[Tuple[str, ModelSpec]]) -> None:
+    for key, spec in names:
+        _load_one(key, spec)
 
 
-def _load_one(name: str) -> Optional[Any]:
-    spec = MODEL_SPECS.get(name)
-    if spec is None:
-        return None
-
+def _load_one(key: str, spec: ModelSpec) -> Optional[Any]:
     try:
         from transformers import pipeline as hf_pipeline
 
@@ -229,31 +251,76 @@ def _load_one(name: str) -> Optional[Any]:
             **dict(spec.pipeline_kwargs),
         )
     except Exception as exc:
-        logger.warning("Model warmup failed for %s: %s", name, exc)
-        _mark_one(name, "failed", str(exc))
+        logger.warning("Model warmup failed for %s: %s", key, exc)
+        _mark_one(key, "failed", str(exc), spec)
         return None
 
     with _LOCK:
-        _MODELS[name] = model
-        _STATES[name].status = "ready"
-        _STATES[name].error = None
+        _STATE_SPECS[key] = spec
+        _MODELS[key] = model
+        _STATES.setdefault(key, ModelState()).status = "ready"
+        _STATES[key].error = None
     return model
 
 
-def _requested_model_names(model_names: Optional[Iterable[str]]) -> list[str]:
+def _requested_model_names(model_names: Optional[Iterable[ModelRequest]]) -> list[Tuple[str, ModelSpec]]:
     if model_names is None:
-        return list(MODEL_SPECS)
-    return [name for name in dict.fromkeys(model_names) if name in MODEL_SPECS]
+        return [(name, spec) for name, spec in MODEL_SPECS.items()]
+
+    requests = []
+    seen = set()
+    for model_name in model_names:
+        request = (
+            _model_request(model_name[0], model_name[1])
+            if isinstance(model_name, tuple)
+            else _model_request(model_name)
+        )
+        if request is None:
+            continue
+        key, spec = request
+        if key in seen:
+            continue
+        seen.add(key)
+        requests.append((key, spec))
+    return requests
 
 
-def _mark_many(names: Iterable[str], status: str, error: Optional[str]) -> None:
-    for name in _requested_model_names(names):
-        _mark_one(name, status, error)
+def _mark_many(names: Iterable[ModelRequest], status: str, error: Optional[str]) -> None:
+    for key, spec in _requested_model_names(names):
+        _mark_one(key, status, error, spec)
 
 
-def _mark_one(name: str, status: str, error: Optional[str]) -> None:
-    if name not in _STATES:
-        return
+def _mark_one(
+    key: str,
+    status: str,
+    error: Optional[str],
+    spec: Optional[ModelSpec] = None,
+) -> None:
     with _LOCK:
-        _STATES[name].status = status
-        _STATES[name].error = error
+        if spec is not None:
+            _STATE_SPECS[key] = spec
+        _STATES.setdefault(key, ModelState()).status = status
+        _STATES[key].error = error
+
+
+def _model_request(name: str, model_id: Optional[str] = None) -> Optional[Tuple[str, ModelSpec]]:
+    base = MODEL_SPECS.get(name)
+    if base is None:
+        return None
+
+    effective_model_id = _resolve_model_id(name, model_id)
+    spec = ModelSpec(
+        name=base.name,
+        model_id=effective_model_id,
+        task=base.task,
+        pipeline_kwargs=base.pipeline_kwargs,
+    )
+    key = name if effective_model_id == base.model_id else f"{name}:{effective_model_id}"
+    return key, spec
+
+
+def _resolve_model_id(name: str, model_id: Optional[str] = None) -> str:
+    explicit = model_id or os.getenv(f"SENTINELGUARD_{name.upper()}_MODEL_ID")
+    if not explicit:
+        return MODEL_SPECS[name].model_id
+    return MODEL_ALIASES.get(explicit.strip().lower(), explicit.strip())

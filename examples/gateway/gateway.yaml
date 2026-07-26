@@ -8,9 +8,65 @@ gateway:
   block_on_prompt_fail: true
   block_on_output_fail: true
   sanitize: true
+  redact_pii: true
+  redact_output_pii: true
+  route_pii_to_private_provider: false
+  fallback_enabled: true
+  routing_strategy: priority
+  health_check_enabled: true
+  unhealthy_ttl_seconds: 30
+  failover_status_codes:
+    - 408
+    - 409
+    - 425
+    - 429
+    - 500
+    - 502
+    - 503
+    - 504
   timeout_seconds: 60
   default_max_tokens: 1024
   streaming_mode: buffered
+  state_backend: sqlite
+  state_path: /tmp/sentinelguard_gateway.sqlite3
+  cache_enabled: false
+  cache_backend: sqlite
+  cache_ttl_seconds: 300
+  cache_max_entries: 1024
+  mcp_gateway_enabled: false
+  mcp_upstream_url: http://localhost:9001
+  a2a_gateway_enabled: false
+  a2a_upstream_url: http://localhost:9002
+  realtime_gateway_enabled: false
+  realtime_upstream_url: ws://localhost:9003/v1/realtime
+  admin_ui_enabled: true
+  otel_enabled: false
+  langfuse_enabled: false
   metrics_enabled: true
   audit_enabled: true
   audit_hash_salt_env: SENTINELGUARD_AUDIT_SALT
+  virtual_keys:
+    - name: local-dev
+      key_env: SENTINELGUARD_GATEWAY_API_KEY
+      allowed_models:
+        - fast-chat
+        - smart-chat
+      max_requests: 10000
+      max_tokens: 5000000
+      max_budget: 50.0
+      budget_reset: daily
+  providers:
+    - name: primary-openai
+      provider: openai
+      model_name: fast-chat
+      upstream_model: gpt-4o-mini
+      upstream_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      private: false
+      priority: 10
+      weight: 1
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+      rpm: 1000
+      tpm: 1000000
+      max_parallel_requests: 50

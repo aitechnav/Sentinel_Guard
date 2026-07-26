@@ -57,6 +57,30 @@ spec:
                   name: sentinelguard-gateway-secrets
                   key: GOOGLE_API_KEY
                   optional: true
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: DEEPSEEK_API_KEY
+                  optional: true
+            - name: MISTRAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: MISTRAL_API_KEY
+                  optional: true
+            - name: MINIMAX_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: MINIMAX_API_KEY
+                  optional: true
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: HF_TOKEN
+                  optional: true
             - name: SENTINELGUARD_GATEWAY_API_KEY
               valueFrom:
                 secretKeyRef:

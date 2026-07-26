@@ -4,10 +4,12 @@ from sentinelguard.core.scanner import AggregatedResult, RiskLevel, ScanResult
 from sentinelguard.monitoring import (
     prometheus_available,
     record_gateway_request,
+    record_provider_attempts,
     record_scan,
     render_metrics,
     scanner_category,
 )
+from sentinelguard.gateway.providers import ProviderAttempt
 
 
 def test_scanner_category_groups_alert_types():
@@ -38,6 +40,12 @@ def test_monitoring_helpers_are_safe_without_required_dependency():
 
     record_scan("prompt", result)
     record_gateway_request("openai", False, "blocked_prompt")
+    record_provider_attempts(
+        [
+            ProviderAttempt(name="primary", provider="openai", status_code=503),
+            ProviderAttempt(name="backup", provider="openai", status_code=200),
+        ]
+    )
 
     if not prometheus_available():
         assert render_metrics() == b""
