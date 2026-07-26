@@ -2,18 +2,13 @@ site_name: SentinelGuard
 site_description: Security guardrails, LLM gateway controls, and observability for AI applications
 site_url: https://aitechnav.github.io/Sentinel_Guard/
 use_directory_urls: false
-repo_url: https://github.com/aitechnav/Sentinel_Guard
-repo_name: aitechnav/Sentinel_Guard
-edit_uri: edit/main/docs/
 copyright: Copyright &copy; SentinelGuard Contributors
 
 theme:
   name: material
   custom_dir: overrides
-  logo: material/shield-check
-  favicon: material/shield-check
-  icon:
-    repo: fontawesome/brands/github
+  logo: assets/images/sentinelguard-logo.svg
+  favicon: assets/images/sentinelguard-logo.svg
   features:
     - announce.dismiss
     - content.code.copy
