@@ -141,10 +141,9 @@ sentinelguard gateway --provider kimi --port 8080
 
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and
 `MOONSHOT_API_KEY` are upstream provider keys. `SENTINELGUARD_GATEWAY_API_KEY`
-is a client-facing token you generate for apps and IDEs that call the
-SentinelGuard gateway. You do not get it from an LLM provider; generate it
-locally with `sentinelguard token`, then use the same `sgw_...` value in your
-app or IDE API-key field.
+is the gateway client token created by the team running SentinelGuard. Generate
+it locally with `sentinelguard token`, then use the same `sgw_...` value in
+your app or IDE API-key field.
 Package-mode library usage does not need this gateway token.
 
 Point OpenAI-compatible apps or IDEs to:
