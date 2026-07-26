@@ -12,6 +12,7 @@ description: Security-first LLM gateway and guardrails framework for AI applicat
     <div class="sg-nav-links">
       <a href="getting-started.html">Docs</a>
       <a href="gateway.html">Gateway</a>
+      <a href="client-integrations.html">Integrations</a>
       <a href="deployment.html">Deploy</a>
     </div>
   </nav>
