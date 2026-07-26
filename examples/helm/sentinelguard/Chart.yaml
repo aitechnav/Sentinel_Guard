@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sentinelguard
+description: SentinelGuard LLM gateway with security scanning and routing
+type: application
+version: 0.1.0
+appVersion: "0.0.8"

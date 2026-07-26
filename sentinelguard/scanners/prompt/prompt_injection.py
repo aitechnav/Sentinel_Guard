@@ -1,8 +1,7 @@
 """Prompt injection detection scanner.
 
 Detects attempts to manipulate LLM behavior through injection attacks
-using pattern matching, heuristics, and an optional
-``protectai/deberta-v3-base-prompt-injection-v2`` HuggingFace transformer.
+using pattern matching, heuristics, and an optional Hugging Face transformer.
 """
 
 from __future__ import annotations
@@ -105,6 +104,22 @@ COMPILED_PATTERNS = [re.compile(p) for p in INJECTION_PATTERNS]
 
 
 _INJECTION_MODEL_ID = "protectai/deberta-v3-base-prompt-injection-v2"
+_UNSAFE_MODEL_LABELS = {
+    "attack",
+    "injection",
+    "jailbreak",
+    "label_1",
+    "malicious",
+    "prompt_injection",
+    "unsafe",
+}
+_SAFE_MODEL_LABELS = {
+    "benign",
+    "clean",
+    "label_0",
+    "normal",
+    "safe",
+}
 
 
 @register_scanner
@@ -125,24 +140,29 @@ class PromptInjectionScanner(PromptScanner):
         patterns: Additional regex patterns to check.
         use_model: "auto" uses background-warmed model if ready, True loads synchronously,
             False disables model scoring.
+        model_id: Optional Hugging Face model override. For Meta Prompt Guard,
+            use ``meta-llama/Prompt-Guard-86M`` or the ``prompt_guard_86m`` alias.
     """
 
     scanner_name: ClassVar[str] = "prompt_injection"
+    DEFAULT_MODEL: ClassVar[str] = _INJECTION_MODEL_ID
 
     def __init__(
         self,
         threshold: float = 0.5,
         patterns: Optional[List[str]] = None,
         use_model: Union[bool, str] = "auto",
+        model_id: Optional[str] = None,
         **kwargs: Any,
     ):
         super().__init__(threshold=threshold, **kwargs)
         self._extra_patterns = [re.compile(p) for p in (patterns or [])]
         self.use_model = use_model
+        self.model_id = model_id
         self._model = None  # lazy-loaded on first scan() call
 
     def _load_model(self) -> None:
-        self._model = resolve_model(self.scanner_name, self.use_model)
+        self._model = resolve_model(self.scanner_name, self.use_model, self.model_id)
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         pattern_score, matched = self._pattern_scan(text)
@@ -156,7 +176,7 @@ class PromptInjectionScanner(PromptScanner):
             weighted_score = pattern_score * 0.3 + heuristic_score * 0.2 + model_score * 0.5
         else:
             weighted_score = pattern_score * 0.6 + heuristic_score * 0.4
-        final_score = max(pattern_score, heuristic_score, weighted_score)
+        final_score = max(pattern_score, heuristic_score, model_score, weighted_score)
 
         is_valid = final_score < self.threshold
 
@@ -170,7 +190,7 @@ class PromptInjectionScanner(PromptScanner):
                 "model_score": model_score,
                 "matched_patterns": matched,
                 "heuristics": heuristics,
-                "model_name": _INJECTION_MODEL_ID,
+                "model_name": self.model_id or _INJECTION_MODEL_ID,
                 "use_model": self.use_model,
             },
         )
@@ -244,9 +264,7 @@ class PromptInjectionScanner(PromptScanner):
     def _model_scan(self, text: str) -> float:
         try:
             result = self._model(text[:512])
-            if result and result[0].get("label") == "INJECTION":
-                return result[0].get("score", 0.5)
-            return 1.0 - result[0].get("score", 0.5)
+            return _attack_score_from_model_result(result)
         except Exception as exc:
             logger.warning("Injection model inference failed: %s", exc)
             return 0.0
@@ -259,3 +277,43 @@ class PromptInjectionScanner(PromptScanner):
         elif score >= 0.3:
             return RiskLevel.MEDIUM
         return RiskLevel.LOW
+
+
+def _attack_score_from_model_result(result: Any) -> float:
+    """Return an attack probability from common HF classifier label formats."""
+    items = _flatten_model_result(result)
+    if not items:
+        return 0.0
+
+    unsafe_scores = [
+        float(item.get("score", 0.0))
+        for item in items
+        if str(item.get("label", "")).strip().lower() in _UNSAFE_MODEL_LABELS
+    ]
+    if unsafe_scores:
+        return max(unsafe_scores)
+
+    safe_scores = [
+        float(item.get("score", 0.0))
+        for item in items
+        if str(item.get("label", "")).strip().lower() in _SAFE_MODEL_LABELS
+    ]
+    if safe_scores:
+        return max(0.0, 1.0 - max(safe_scores))
+
+    return float(items[0].get("score", 0.0))
+
+
+def _flatten_model_result(result: Any) -> list[dict[str, Any]]:
+    if isinstance(result, dict):
+        return [result]
+    if not isinstance(result, list):
+        return []
+
+    flattened: list[dict[str, Any]] = []
+    for item in result:
+        if isinstance(item, dict):
+            flattened.append(item)
+        elif isinstance(item, list):
+            flattened.extend(entry for entry in item if isinstance(entry, dict))
+    return flattened

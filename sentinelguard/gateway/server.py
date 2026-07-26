@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 from typing import Any, Mapping, Optional
@@ -11,7 +13,19 @@ from sentinelguard.core.config import GuardConfig
 from sentinelguard.core.guard import SentinelGuard
 from sentinelguard.core.scanner import AggregatedResult
 from sentinelguard.gateway.config import GatewayConfig
+from sentinelguard.gateway.operations import (
+    GatewayClient,
+    authenticate_gateway_request,
+    check_gateway_access,
+    extract_chat_usage,
+    gateway_response_cache,
+    gateway_usage_store,
+    provider_for_result,
+    virtual_key_summary,
+)
+from sentinelguard.gateway.observability import emit_gateway_event
 from sentinelguard.gateway.providers import (
+    available_gateway_models,
     configured_providers,
     effective_api_key_env,
     effective_provider,
@@ -41,7 +55,7 @@ from sentinelguard.monitoring import (
 logger = logging.getLogger(__name__)
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request, WebSocket
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -63,6 +77,8 @@ def create_gateway_app(
 
     config = gateway_config or GatewayConfig()
     guard = SentinelGuard(config=guard_config)
+    usage_store = gateway_usage_store(config)
+    response_cache = gateway_response_cache(config)
 
     app = FastAPI(
         title="SentinelGuard LLM Gateway",
@@ -80,6 +96,7 @@ def create_gateway_app(
         allow_headers=["*"],
     )
 
+    @app.get("/health")
     @app.get("/gateway/health")
     async def health():
         return {
@@ -103,14 +120,136 @@ def create_gateway_app(
             "redact_pii": config.redact_pii,
             "redact_output_pii": config.redact_output_pii,
             "streaming_mode": config.streaming_mode,
+            "state_backend": config.state_backend,
+            "cache_backend": config.cache_backend,
+            "cache_enabled": config.cache_enabled,
+            "routing_strategy": config.routing_strategy,
+            "health_check_enabled": config.health_check_enabled,
             "metrics_enabled": config.metrics_enabled,
             "audit_enabled": config.audit_enabled,
-            "client_auth_enabled": bool(_client_api_key(config)),
+            "client_auth_enabled": bool(_client_api_key(config) or config.virtual_keys),
+            "virtual_keys": virtual_key_summary(config),
             "prometheus_available": prometheus_available(),
             "model_status": model_status(),
             "prompt_scanners": guard.prompt_scanner_names,
             "output_scanners": guard.output_scanner_names,
         }
+
+    @app.get("/routes")
+    async def routes():
+        endpoints = [
+            "/v1/chat/completions",
+            "/v1/models",
+            "/models",
+            "/routes",
+            "/health",
+            "/gateway/health",
+            "/gateway/usage",
+            "/gateway/provider-health",
+        ]
+        if config.admin_ui_enabled:
+            endpoints.append("/admin")
+        if config.mcp_gateway_enabled:
+            endpoints.append("/mcp/{path}")
+        if config.a2a_gateway_enabled:
+            endpoints.append("/a2a/{path}")
+        if config.realtime_gateway_enabled:
+            endpoints.extend(["/v1/realtime", "/realtime"])
+        if config.metrics_enabled:
+            endpoints.append("/metrics")
+        return {
+            "object": "list",
+            "gateway": "sentinelguard",
+            "endpoints": endpoints,
+            "models": available_gateway_models(config),
+            "providers": [
+                {
+                    "name": provider.name,
+                    "provider": provider.provider,
+                    "model_name": provider.model_name,
+                    "upstream_model": provider.upstream_model,
+                    "private": provider.private,
+                    "priority": provider.priority,
+                    "weight": provider.weight,
+                    "enabled": provider.enabled,
+                }
+                for provider in configured_providers(config)
+            ],
+        }
+
+    @app.get("/models")
+    @app.get("/v1/models")
+    async def models():
+        return {"object": "list", "data": available_gateway_models(config)}
+
+    @app.get("/gateway/usage")
+    async def usage(request: Request):
+        auth = authenticate_gateway_request(request.headers, config)
+        if not auth.allowed or auth.client is None:
+            return _gateway_error_response(auth.status_code, auth.error_type, auth.message)
+        return {
+            "object": "sentinelguard.gateway.usage",
+            "client": {
+                "name": auth.client.name,
+                "tenant_id": auth.client.tenant_id,
+                "team_id": auth.client.team_id,
+                "user_id": auth.client.user_id,
+            },
+            "usage": usage_store.snapshot(
+                auth.client.key_id,
+                auth.client.budget_reset,
+            ).to_dict(),
+        }
+
+    @app.get("/gateway/provider-health")
+    async def provider_health():
+        from sentinelguard.gateway.providers import provider_health_snapshot
+
+        return {
+            "object": "sentinelguard.gateway.provider_health",
+            "providers": provider_health_snapshot(config),
+        }
+
+    if config.admin_ui_enabled:
+
+        @app.get("/admin")
+        async def admin():
+            return Response(content=_admin_html(), media_type="text/html")
+
+    @app.api_route(
+        "/mcp/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def mcp_passthrough(request: Request, path: str):
+        return await _passthrough_gateway_request(
+            request,
+            path,
+            config,
+            guard,
+            enabled=config.mcp_gateway_enabled,
+            upstream_url=config.mcp_upstream_url,
+            gateway_name="mcp",
+        )
+
+    @app.api_route(
+        "/a2a/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def a2a_passthrough(request: Request, path: str):
+        return await _passthrough_gateway_request(
+            request,
+            path,
+            config,
+            guard,
+            enabled=config.a2a_gateway_enabled,
+            upstream_url=config.a2a_upstream_url,
+            gateway_name="a2a",
+        )
+
+    @app.websocket("/v1/realtime")
+    @app.websocket("/realtime")
+    async def realtime_websocket(websocket: WebSocket):
+        await _realtime_websocket_proxy(websocket, config)
 
     if config.metrics_enabled:
 
@@ -128,11 +267,15 @@ def create_gateway_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
-        if not _is_authorized(request.headers, config):
-            return _unauthorized_response()
+        auth = authenticate_gateway_request(request.headers, config)
+        if not auth.allowed or auth.client is None:
+            return _gateway_error_response(auth.status_code, auth.error_type, auth.message)
 
         payload = await request.json()
         _validate_payload(payload)
+        access = check_gateway_access(auth.client, payload, usage_store)
+        if not access.allowed:
+            return _gateway_error_response(access.status_code, access.error_type, access.message)
         audit_context = build_audit_context(
             request.headers,
             payload,
@@ -146,6 +289,7 @@ def create_gateway_app(
                 config,
                 guard,
                 audit_context,
+                auth.client,
             )
 
         if not config.enabled:
@@ -156,6 +300,15 @@ def create_gateway_app(
             )
             record_provider_attempts(forwarded.attempts)
             outcome = "pass_through" if forwarded.status_code < 400 else "upstream_error"
+            if forwarded.status_code < 400:
+                _record_gateway_usage(
+                    auth.client,
+                    payload,
+                    forwarded.body,
+                    config,
+                    forwarded.provider_name,
+                    False,
+                )
             record_gateway_request(forwarded.provider, False, outcome)
             return JSONResponse(
                 content=forwarded.body,
@@ -181,6 +334,30 @@ def create_gateway_app(
         upstream_payload = dict(payload)
         if config.sanitize and safe_prompt != prompt_text:
             upstream_payload["messages"] = replace_last_user_text(messages, safe_prompt)
+
+        cached_body = response_cache.get(upstream_payload, config)
+        if cached_body is not None:
+            output_text = extract_assistant_text(cached_body)
+            output_scan = guard.scan_output(output_text, prompt=safe_prompt)
+            record_scan("output", output_scan)
+            output_decision = evaluate_output_policy(output_text, output_scan, config)
+            _audit_scan(config, audit_context, False, "output", output_scan, provider="cache")
+            if not output_decision.allowed:
+                record_gateway_request("cache", False, "blocked_output")
+                return _blocked_response(
+                    "output",
+                    output_scan,
+                    status_code=502,
+                    decision=output_decision,
+                )
+
+            cached_safe_body = cached_body
+            safe_output = output_decision.sanitized_text or output_text
+            if config.sanitize and safe_output != output_text:
+                cached_safe_body = replace_assistant_text(cached_safe_body, safe_output)
+            _record_gateway_usage(auth.client, upstream_payload, cached_safe_body, config, "cache", True)
+            record_gateway_request("cache", False, "cache_hit")
+            return JSONResponse(content=cached_safe_body, status_code=200)
 
         forwarded = await forward_chat_completion_with_failover(
             upstream_payload,
@@ -217,6 +394,15 @@ def create_gateway_app(
         if config.sanitize and safe_output != output_text:
             upstream_body = replace_assistant_text(upstream_body, safe_output)
 
+        response_cache.set(upstream_payload, upstream_body, config)
+        _record_gateway_usage(
+            auth.client,
+            upstream_payload,
+            upstream_body,
+            config,
+            forwarded.provider_name,
+            False,
+        )
         record_gateway_request(forwarded.provider, False, "passed")
         return JSONResponse(content=upstream_body, status_code=forwarded.status_code)
 
@@ -229,6 +415,7 @@ async def _handle_streaming_chat(
     config: GatewayConfig,
     guard: SentinelGuard,
     audit_context: AuditContext,
+    client: GatewayClient,
 ) -> Any:
     if config.streaming_mode != "buffered":
         raise HTTPException(
@@ -252,6 +439,14 @@ async def _handle_streaming_chat(
                 content=forwarded.body,
                 status_code=forwarded.status_code,
             )
+        _record_gateway_usage(
+            client,
+            upstream_payload,
+            forwarded.body,
+            config,
+            forwarded.provider_name,
+            False,
+        )
         record_gateway_request(forwarded.provider, True, "pass_through")
         return _streaming_response(forwarded.body)
 
@@ -307,8 +502,198 @@ async def _handle_streaming_chat(
     if config.sanitize and safe_output != output_text:
         upstream_body = replace_assistant_text(upstream_body, safe_output)
 
+    _record_gateway_usage(
+        client,
+        upstream_payload,
+        upstream_body,
+        config,
+        forwarded.provider_name,
+        False,
+    )
     record_gateway_request(forwarded.provider, True, "passed")
     return _streaming_response(upstream_body)
+
+
+async def _passthrough_gateway_request(
+    request: Request,
+    path: str,
+    config: GatewayConfig,
+    guard: SentinelGuard,
+    *,
+    enabled: bool,
+    upstream_url: Optional[str],
+    gateway_name: str,
+) -> Response:
+    auth = authenticate_gateway_request(request.headers, config)
+    if not auth.allowed or auth.client is None:
+        return _gateway_error_response(auth.status_code, auth.error_type, auth.message)
+    if not enabled or not upstream_url:
+        return _gateway_error_response(
+            501,
+            f"sentinelguard_{gateway_name}_gateway_not_configured",
+            f"SentinelGuard {gateway_name.upper()} gateway is not configured",
+        )
+
+    body = await request.body()
+    text = _extract_passthrough_text(body)
+    if config.enabled and text:
+        scan = guard.scan_prompt(text)
+        record_scan(gateway_name, scan)
+        decision = evaluate_prompt_policy(text, scan, config)
+        if not decision.allowed:
+            record_gateway_request(gateway_name, False, "blocked_prompt")
+            return _blocked_response(gateway_name, scan, status_code=400, decision=decision)
+
+    httpx = _load_httpx()
+    target_url = _join_upstream_url(upstream_url, path)
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
+
+    headers = _passthrough_headers(request.headers)
+    async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+        response = await client.request(
+            request.method,
+            target_url,
+            content=body,
+            headers=headers,
+        )
+    record_gateway_request(gateway_name, False, "passed" if response.status_code < 400 else "upstream_error")
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type"),
+    )
+
+
+async def _realtime_websocket_proxy(websocket: WebSocket, config: GatewayConfig) -> None:
+    auth = authenticate_gateway_request(websocket.headers, config)
+    if not auth.allowed:
+        await websocket.close(code=1008)
+        return
+    if not config.realtime_gateway_enabled or not config.realtime_upstream_url:
+        await websocket.close(code=1011)
+        return
+
+    try:
+        import websockets
+    except ImportError:
+        await websocket.close(code=1011)
+        return
+
+    await websocket.accept()
+    upstream_url = config.realtime_upstream_url
+    if websocket.url.query:
+        upstream_url = f"{upstream_url}?{websocket.url.query}"
+
+    passthrough_headers = _websocket_passthrough_headers(websocket.headers)
+    try:
+        upstream_context = websockets.connect(
+            upstream_url,
+            additional_headers=passthrough_headers,
+        )
+    except TypeError:
+        upstream_context = websockets.connect(
+            upstream_url,
+            extra_headers=passthrough_headers,
+        )
+
+    async with upstream_context as upstream:
+        await asyncio.gather(
+            _websocket_client_to_upstream(websocket, upstream),
+            _websocket_upstream_to_client(websocket, upstream),
+        )
+
+
+async def _websocket_client_to_upstream(websocket: WebSocket, upstream: Any) -> None:
+    while True:
+        message = await websocket.receive()
+        if message.get("type") == "websocket.disconnect":
+            await upstream.close()
+            return
+        if message.get("text") is not None:
+            await upstream.send(message["text"])
+        elif message.get("bytes") is not None:
+            await upstream.send(message["bytes"])
+
+
+async def _websocket_upstream_to_client(websocket: WebSocket, upstream: Any) -> None:
+    async for message in upstream:
+        if isinstance(message, bytes):
+            await websocket.send_bytes(message)
+        else:
+            await websocket.send_text(str(message))
+
+
+def _record_gateway_usage(
+    client: GatewayClient,
+    payload: Mapping[str, Any],
+    response_body: Mapping[str, Any],
+    config: GatewayConfig,
+    provider_name: str,
+    cache_hit: bool,
+) -> None:
+    provider = provider_for_result(config, provider_name)
+    usage = extract_chat_usage(payload, response_body, provider)
+    gateway_usage_store(config).record(
+        client,
+        model=str(payload.get("model") or ""),
+        provider=provider_name,
+        usage=usage,
+        cache_hit=cache_hit,
+    )
+    emit_gateway_event(
+        config,
+        "sentinelguard.gateway.usage",
+        {
+            "client": client.name,
+            "tenant_id": client.tenant_id or "",
+            "team_id": client.team_id or "",
+            "model": str(payload.get("model") or ""),
+            "provider": provider_name,
+            "cache_hit": cache_hit,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "cost": usage.cost,
+        },
+    )
+
+
+def _admin_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SentinelGuard Gateway</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #17202a; }
+    main { max-width: 920px; margin: 0 auto; }
+    h1 { font-size: 28px; margin-bottom: 8px; }
+    p { color: #4b5563; }
+    section { border: 1px solid #d6dde6; border-radius: 8px; padding: 18px; margin-top: 18px; }
+    a { color: #0f5db8; text-decoration: none; font-weight: 600; }
+    code { background: #eef2f7; padding: 2px 6px; border-radius: 4px; }
+    ul { line-height: 1.8; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SentinelGuard Gateway</h1>
+    <p>Security enforcement, model routing, usage tracking, and operational checks.</p>
+    <section>
+      <h2>Operations</h2>
+      <ul>
+        <li><a href="/routes">Routes and providers</a></li>
+        <li><a href="/v1/models">Models</a></li>
+        <li><a href="/gateway/provider-health">Provider health</a></li>
+        <li><a href="/gateway/health">Gateway health</a></li>
+        <li><code>/gateway/usage</code> requires your gateway API key.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>"""
 
 
 def _audit_scan(
@@ -352,27 +737,68 @@ def _validate_payload(payload: Any) -> None:
         raise HTTPException(status_code=400, detail="No user message text found")
 
 
+def _extract_passthrough_text(body: bytes) -> str:
+    if not body:
+        return ""
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:
+        return ""
+    values: list[str] = []
+    _collect_text_values(payload, values)
+    return "\n".join(values)[:20000]
+
+
+def _collect_text_values(value: Any, values: list[str]) -> None:
+    if isinstance(value, str):
+        values.append(value)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_text_values(item, values)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.lower() in {"text", "content", "prompt", "message", "input", "query"}:
+                _collect_text_values(item, values)
+            elif isinstance(item, (dict, list)):
+                _collect_text_values(item, values)
+
+
+def _join_upstream_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _passthrough_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    blocked = {"host", "content-length"}
+    return {key: value for key, value in headers.items() if key.lower() not in blocked}
+
+
+def _websocket_passthrough_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    blocked = {
+        "host",
+        "connection",
+        "upgrade",
+        "sec-websocket-key",
+        "sec-websocket-version",
+        "sec-websocket-extensions",
+    }
+    return {key: value for key, value in headers.items() if key.lower() not in blocked}
+
+
+def _load_httpx() -> Any:
+    try:
+        import httpx
+    except ImportError as exc:
+        raise ImportError(
+            "httpx is required for gateway passthrough. "
+            "Install with: pip install sentinelguard[gateway]"
+        ) from exc
+    return httpx
+
+
 def _is_authorized(headers: Mapping[str, str], config: GatewayConfig) -> bool:
-    expected = _client_api_key(config)
-    if not expected:
-        return True
-
-    incoming = {key.lower(): value for key, value in headers.items()}
-    candidates = []
-
-    authorization = incoming.get("authorization")
-    if authorization:
-        candidates.append(authorization)
-        bearer_prefix = "Bearer "
-        if authorization.startswith(bearer_prefix):
-            candidates.append(authorization[len(bearer_prefix) :])
-
-    if incoming.get("x-api-key"):
-        candidates.append(incoming["x-api-key"])
-    if incoming.get("x-sentinelguard-api-key"):
-        candidates.append(incoming["x-sentinelguard-api-key"])
-
-    return any(candidate == expected for candidate in candidates)
+    return authenticate_gateway_request(headers, config).allowed
 
 
 def _client_api_key(config: GatewayConfig) -> Optional[str]:
@@ -384,12 +810,20 @@ def _client_api_key(config: GatewayConfig) -> Optional[str]:
 
 
 def _unauthorized_response() -> JSONResponse:
+    return _gateway_error_response(
+        401,
+        "sentinelguard_gateway_unauthorized",
+        "SentinelGuard gateway authentication failed",
+    )
+
+
+def _gateway_error_response(status_code: int, error_type: str, message: str) -> JSONResponse:
     return JSONResponse(
-        status_code=401,
+        status_code=status_code,
         content={
             "error": {
-                "message": "SentinelGuard gateway authentication failed",
-                "type": "sentinelguard_gateway_unauthorized",
+                "message": message,
+                "type": error_type,
             }
         },
     )

@@ -64,6 +64,31 @@ class TestPromptInjectionScanner:
             result = scanner.scan(example)
             assert not result.is_valid, example
 
+    def test_prompt_guard_jailbreak_label_detected(self):
+        scanner = PromptInjectionScanner(
+            threshold=0.5,
+            use_model=True,
+            model_id="prompt_guard_86m",
+        )
+        scanner._model = lambda text: [{"label": "JAILBREAK", "score": 0.92}]
+        scanner._load_model = lambda: None
+
+        result = scanner.scan("Can you help me with a normal question?")
+
+        assert not result.is_valid
+        assert result.details["model_score"] == 0.92
+        assert result.details["model_name"] == "prompt_guard_86m"
+
+    def test_prompt_guard_benign_label_is_low_risk(self):
+        scanner = PromptInjectionScanner(threshold=0.5, use_model=True)
+        scanner._model = lambda text: [{"label": "BENIGN", "score": 0.95}]
+        scanner._load_model = lambda: None
+
+        result = scanner.scan("Can you summarize this public blog post?")
+
+        assert result.is_valid
+        assert abs(result.details["model_score"] - 0.05) < 0.001
+
 
 class TestToxicityScanner:
     def test_safe_text(self):

@@ -60,12 +60,49 @@ scanners, install the optional model extra:
 pip install "sentinelguard[models]"
 ```
 
-With `sentinelguard[models]`, SentinelGuard starts a background model warmup
-for configured model-backed scanners when the guard is created. Scanning is
-still available immediately through the built-in rules and heuristics; model
-scores are used automatically once the models are ready. The optional models
-can require more than 2 GB of local cache space depending on platform and
-Hugging Face cache state.
+With `sentinelguard[models]`, SentinelGuard installs the local model runtime
+libraries such as Transformers and PyTorch. Model weights are downloaded into
+the local Hugging Face cache when first used, then reused by later runs.
+SentinelGuard starts a background model warmup for configured model-backed
+scanners when the guard is created, so scanning is still available immediately
+through the built-in rules and heuristics; model scores are used automatically
+once the models are ready. The optional models can require more than 2 GB of
+local cache space depending on platform and Hugging Face cache state.
+
+The default prompt-injection model is the open, low-friction
+`protectai/deberta-v3-base-prompt-injection-v2`. You can also use Meta Prompt
+Guard by setting a model override. Prompt Guard may require accepting Meta's
+Hugging Face model terms and authenticating with a Hugging Face token before
+the model can be downloaded.
+
+```yaml
+model_warmup: true
+prompt_scanners:
+  prompt_injection:
+    enabled: true
+    threshold: 0.5
+    params:
+      use_model: auto
+      model_id: meta-llama/Prompt-Guard-86M
+```
+
+You can use the shorter alias as well:
+
+```python
+from sentinelguard.scanners.prompt import PromptInjectionScanner
+
+scanner = PromptInjectionScanner(use_model=True, model_id="prompt_guard_86m")
+```
+
+For gateway or container deployments, the same override can be set with an
+environment variable:
+
+```bash
+export SENTINELGUARD_PROMPT_INJECTION_MODEL_ID="prompt_guard_86m"
+```
+
+SentinelGuard also recognizes `prompt_guard_2_22m` and
+`prompt_guard_2_86m` aliases for Meta's newer Prompt Guard 2 models.
 
 The secrets scanner remains hybrid: deterministic detectors catch known API
 keys, tokens, private keys, and explicit password disclosure, while the local
@@ -259,6 +296,24 @@ gateway:
   client_api_key_env: SENTINELGUARD_GATEWAY_API_KEY
   default_max_tokens: 1024
   streaming_mode: buffered
+  routing_strategy: priority
+  health_check_enabled: true
+  unhealthy_ttl_seconds: 30
+  state_backend: sqlite
+  state_path: /tmp/sentinelguard_gateway.sqlite3
+  cache_enabled: false
+  cache_backend: sqlite
+  cache_ttl_seconds: 300
+  cache_max_entries: 1024
+  mcp_gateway_enabled: false
+  mcp_upstream_url: http://localhost:9001
+  a2a_gateway_enabled: false
+  a2a_upstream_url: http://localhost:9002
+  realtime_gateway_enabled: false
+  realtime_upstream_url: ws://localhost:9003/v1/realtime
+  admin_ui_enabled: true
+  otel_enabled: false
+  langfuse_enabled: false
   metrics_enabled: true
   audit_enabled: true
   audit_hash_salt_env: SENTINELGUARD_AUDIT_SALT
@@ -271,6 +326,97 @@ gateway:
   fallback_enabled: true
   failover_status_codes: [408, 409, 425, 429, 500, 502, 503, 504]
 ```
+
+SentinelGuard can also expose customer-friendly model names, authenticate
+clients with virtual keys, and enforce basic request/token/spend budgets:
+
+```yaml
+gateway:
+  enabled: true
+  cache_enabled: true
+  virtual_keys:
+    - name: app-team-a
+      key_env: SENTINELGUARD_TEAM_A_KEY
+      tenant_id: tenant-a
+      team_id: team-a
+      allowed_models: [fast-chat, smart-chat]
+      max_requests: 10000
+      max_tokens: 5000000
+      max_budget: 50.0
+      budget_reset: daily
+  providers:
+    - name: openai-fast
+      provider: openai
+      model_name: fast-chat
+      upstream_model: gpt-4o-mini
+      api_key_env: OPENAI_API_KEY
+      priority: 10
+      weight: 3
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+      max_parallel_requests: 50
+    - name: anthropic-smart
+      provider: anthropic
+      model_name: smart-chat
+      upstream_model: claude-3-5-sonnet-latest
+      api_key_env: ANTHROPIC_API_KEY
+      priority: 20
+      weight: 1
+```
+
+The gateway exposes operational discovery endpoints:
+
+```text
+GET /v1/models
+GET /models
+GET /routes
+GET /gateway/usage
+GET /gateway/provider-health
+GET /health
+GET /gateway/health
+GET /admin
+```
+
+Gateway state can run in memory for local development or in SQLite for
+persistent virtual-key usage, spend, and budget counters. Response caching can
+use memory, SQLite, or Redis:
+
+```yaml
+gateway:
+  state_backend: sqlite
+  state_path: /data/sentinelguard_gateway.sqlite3
+  cache_enabled: true
+  cache_backend: redis
+  redis_url: redis://redis:6379/0
+```
+
+Routing strategies currently include `priority`, `least-busy`,
+`latency-based-routing`, and `cost-based-routing`. Provider failures update
+process-local health state, and recently failed providers are skipped during
+their configured unhealthy TTL.
+
+SentinelGuard can also proxy MCP and A2A HTTP traffic when upstream endpoints
+are configured. JSON text-like payload fields are scanned before forwarding:
+
+```yaml
+gateway:
+  mcp_gateway_enabled: true
+  mcp_upstream_url: http://mcp-router:9001
+  a2a_gateway_enabled: true
+  a2a_upstream_url: http://a2a-router:9002
+```
+
+Realtime websocket proxying is a separate protocol path, not the same as HTTP
+chat proxying. Enable it explicitly when you have a realtime upstream:
+
+```yaml
+gateway:
+  realtime_gateway_enabled: true
+  realtime_upstream_url: ws://realtime-router:9003/v1/realtime
+```
+
+Helm and Terraform examples are available in `examples/helm/sentinelguard` and
+`examples/terraform/kubernetes`.
 
 Provider defaults:
 
@@ -312,12 +458,16 @@ gateway:
   providers:
     - name: private-ollama
       provider: ollama
+      model_name: private-chat
+      upstream_model: llama3.1
       upstream_url: http://ollama:11434/v1
       private: true
       priority: 1
       weight: 1
     - name: public-openai
       provider: openai
+      model_name: fast-chat
+      upstream_model: gpt-4o-mini
       upstream_url: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
       private: false
@@ -325,12 +475,16 @@ gateway:
       weight: 3
     - name: backup-anthropic
       provider: anthropic
+      model_name: smart-chat
+      upstream_model: claude-3-5-sonnet-latest
       api_key_env: ANTHROPIC_API_KEY
       private: false
       priority: 20
       weight: 1
     - name: backup-mistral
       provider: mistral
+      model_name: fast-chat
+      upstream_model: mistral-small-latest
       api_key_env: MISTRAL_API_KEY
       private: false
       priority: 30
