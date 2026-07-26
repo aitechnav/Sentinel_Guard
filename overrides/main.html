@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+  <script async defer src="https://buttons.github.io/buttons.js"></script>
+{% endblock %}
+
+{% block header %}
+  {{ super() }}
+  <div class="sg-github-star">
+    <a
+      class="github-button"
+      href="https://github.com/aitechnav/Sentinel_Guard"
+      target="_blank"
+      rel="noopener"
+      data-icon="octicon-star"
+      data-size="large"
+      data-show-count="true"
+      aria-label="Star aitechnav/Sentinel_Guard on GitHub"
+    >Star</a>
+  </div>
+{% endblock %}

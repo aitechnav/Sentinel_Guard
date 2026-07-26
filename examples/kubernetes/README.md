@@ -68,7 +68,7 @@ Check health:
 
 ```bash
 kubectl -n sentinelguard port-forward svc/sentinelguard-gateway 8080:8080
-curl http://localhost:8080/gateway/health
+curl http://localhost:8080/gateway/v1/health
 ```
 
 ## Configure apps and IDEs

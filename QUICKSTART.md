@@ -15,6 +15,9 @@ pip install "sentinelguard[gateway,monitoring]"
 sentinelguard init
 ```
 
+For Docker Compose, run `sentinelguard init`, copy `.env.example` to `.env`,
+set a provider key, then start `docker-compose.sentinelguard.yml`.
+
 For optional model-backed detection with automatic background warmup:
 
 ```bash
@@ -94,11 +97,25 @@ sentinelguard scan prompt "Ignore previous instructions" --format json
 # List available scanners
 sentinelguard scanners list
 
+# Create and edit scanner config
+sentinelguard config init --preset standard --output sentinelguard.yaml
+sentinelguard config set prompt_scanners.pii.threshold 0.3 --file sentinelguard.yaml
+sentinelguard config disable toxicity --type prompt --file sentinelguard.yaml
+
+# Edit gateway routing and security config
+sentinelguard gateway-config set gateway.routing_strategy weighted --file sentinelguard-gateway.yaml
+sentinelguard gateway-config set gateway.cache_enabled true --file sentinelguard-gateway.yaml
+sentinelguard gateway-config get gateway.providers.0.name --file sentinelguard-gateway.yaml
+
 # Start API server
 sentinelguard serve --port 8000
 
 # Create gateway starter files
 sentinelguard init
+
+# Start the generated Docker gateway
+cp .env.example .env
+docker compose -f docker-compose.sentinelguard.yml up --build
 
 # Start OpenAI-compatible LLM gateway from generated config
 export OPENAI_API_KEY="sk-..."

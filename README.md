@@ -53,6 +53,22 @@ print(report.summary())
 pip install sentinelguard
 ```
 
+## Documentation Website
+
+The documentation site is built with MkDocs Material and published with GitHub
+Pages:
+
+```text
+https://aitechnav.github.io/Sentinel_Guard/
+```
+
+Build it locally:
+
+```bash
+pip install -r requirements-docs.txt
+mkdocs serve
+```
+
 For gateway mode, install the gateway extra and generate starter files:
 
 ```bash
@@ -65,6 +81,7 @@ sentinelguard init
 - `sentinelguard.yaml` for scanner policy
 - `sentinelguard-gateway.yaml` for routing, provider, auth, cache, and audit settings
 - `.env.example` for provider and gateway keys
+- `Dockerfile.sentinelguard` for a small gateway image built from PyPI
 - `docker-compose.sentinelguard.yml` for container-based gateway deployment
 - `README.sentinelguard.md` with local next steps
 
@@ -193,6 +210,19 @@ For a quick single-provider run without generated files:
 sentinelguard gateway --provider openai --port 8080
 ```
 
+Manage scanner and gateway YAML from the CLI:
+
+```bash
+# Scanner policy
+sentinelguard config set prompt_scanners.pii.threshold 0.3 --file sentinelguard.yaml
+sentinelguard config disable toxicity --type prompt --file sentinelguard.yaml
+
+# Gateway routing/security settings
+sentinelguard gateway-config set gateway.routing_strategy weighted --file sentinelguard-gateway.yaml
+sentinelguard gateway-config set gateway.cache_enabled true --file sentinelguard-gateway.yaml
+sentinelguard gateway-config get gateway.providers.0.name --file sentinelguard-gateway.yaml
+```
+
 Or run the gateway as a standalone Docker proxy:
 
 ```bash
@@ -208,14 +238,19 @@ docker run --rm -p 8080:8080 \
 With Docker Compose:
 
 ```bash
-docker build -t sentinelguard-gateway:local .
-sentinelguard init --docker-image sentinelguard-gateway:local
+sentinelguard init
 cp .env.example .env
 # Edit .env and set at least one upstream provider key.
 export OPENAI_API_KEY="sk-..."
 export SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token"
-docker compose -f docker-compose.sentinelguard.yml up
+docker compose -f docker-compose.sentinelguard.yml up --build
 ```
+
+The generated Docker setup builds `Dockerfile.sentinelguard`, which installs
+the configured SentinelGuard version from PyPI. Set `SENTINELGUARD_VERSION` in
+`.env` if you want the container to use a different released package version.
+Official release images can be published through the GitHub Actions workflow
+documented in `docs/docker-release.md`.
 
 From this repository, the included `docker-compose.yml` can also build the
 gateway directly. For local Hugging Face model-backed detection inside that
@@ -400,10 +435,21 @@ gateway:
       weight: 1
 ```
 
-The gateway exposes operational discovery endpoints:
+The gateway exposes stable management endpoints under `/gateway/v1`. Older
+unversioned endpoints remain available as compatibility aliases.
 
 ```text
+GET /gateway/v1/contract
+GET /gateway/v1/health
+GET /gateway/v1/routes
+GET /gateway/v1/models
+GET /gateway/v1/usage
+GET /gateway/v1/provider-health
+
+# OpenAI-compatible model endpoint
 GET /v1/models
+
+# Compatibility aliases
 GET /models
 GET /routes
 GET /gateway/usage
@@ -412,6 +458,10 @@ GET /health
 GET /gateway/health
 GET /admin
 ```
+
+Use `/gateway/v1/contract` as the stable API contract for dashboards,
+automation, and operational integrations. See `docs/gateway-api.md` for the
+gateway API stability rule.
 
 Gateway state can run in memory for local development or in SQLite for
 persistent virtual-key usage, spend, and budget counters. Response caching can

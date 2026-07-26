@@ -1,0 +1,179 @@
+name: Publish Docker Image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.0.9). Must match pyproject.toml."
+        required: true
+        type: string
+      branch:
+        description: "Branch to build from"
+        required: true
+        type: string
+        default: "main"
+      publish_dockerhub:
+        description: "Also publish to Docker Hub"
+        required: true
+        type: boolean
+        default: false
+      dockerhub_image:
+        description: "Docker Hub image, e.g. aitechnav/sentinelguard-gateway"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release inputs
+        id: release
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_BRANCH: ${{ inputs.branch }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${RELEASE_TAG#v}"
+            REF="${RELEASE_TAG}"
+          else
+            VERSION="${DISPATCH_VERSION}"
+            REF="${DISPATCH_BRANCH}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.ref }}
+
+      - name: Verify version matches
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$VERSION" != "${{ steps.release.outputs.version }}" ]; then
+            echo "ERROR: pyproject.toml version ($VERSION) does not match ${{ steps.release.outputs.version }}"
+            exit 1
+          fi
+          echo "Version verified: $VERSION"
+
+      - name: Prepare image tags
+        id: images
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          DOCKERHUB_IMAGE_INPUT: ${{ inputs.dockerhub_image }}
+          DOCKERHUB_IMAGE_VAR: ${{ vars.DOCKERHUB_IMAGE }}
+          PUBLISH_DOCKERHUB_INPUT: ${{ inputs.publish_dockerhub }}
+          DOCKERHUB_USERNAME_SET: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+          DOCKERHUB_TOKEN_SET: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          GHCR_IMAGE="ghcr.io/${OWNER}/sentinelguard-gateway"
+          DOCKERHUB_IMAGE=$(echo "${DOCKERHUB_IMAGE_INPUT:-$DOCKERHUB_IMAGE_VAR}" | tr '[:upper:]' '[:lower:]')
+          PUBLISH_DOCKERHUB="${PUBLISH_DOCKERHUB_INPUT:-false}"
+
+          if [ "${{ github.event_name }}" = "release" ] && [ -n "$DOCKERHUB_IMAGE" ]; then
+            PUBLISH_DOCKERHUB=true
+          fi
+
+          if [ "$PUBLISH_DOCKERHUB" = "true" ] && [ -z "$DOCKERHUB_IMAGE" ]; then
+            echo "ERROR: Docker Hub publishing was requested, but no Docker Hub image was configured."
+            echo "Set the DOCKERHUB_IMAGE repo variable or workflow input, for example aitechnav/sentinelguard-gateway."
+            exit 1
+          fi
+
+          if [ "$PUBLISH_DOCKERHUB" = "true" ] && { [ "$DOCKERHUB_USERNAME_SET" != "true" ] || [ "$DOCKERHUB_TOKEN_SET" != "true" ]; }; then
+            echo "ERROR: Docker Hub publishing was requested, but DOCKERHUB_USERNAME or DOCKERHUB_TOKEN is missing."
+            exit 1
+          fi
+
+          {
+            echo "tags<<EOF"
+            echo "${GHCR_IMAGE}:${VERSION}"
+            echo "${GHCR_IMAGE}:latest"
+            if [ "$PUBLISH_DOCKERHUB" = "true" ] && [ -n "$DOCKERHUB_IMAGE" ]; then
+              echo "${DOCKERHUB_IMAGE}:${VERSION}"
+              echo "${DOCKERHUB_IMAGE}:latest"
+            fi
+            echo "EOF"
+            echo "ghcr_image=${GHCR_IMAGE}"
+            echo "dockerhub_image=${DOCKERHUB_IMAGE}"
+            echo "publish_dockerhub=${PUBLISH_DOCKERHUB}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: steps.images.outputs.publish_dockerhub == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.images.outputs.tags }}
+          build-args: |
+            SENTINELGUARD_EXTRAS=gateway,monitoring
+          labels: |
+            org.opencontainers.image.title=SentinelGuard Gateway
+            org.opencontainers.image.description=SentinelGuard OpenAI-compatible LLM gateway with security scanning
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: true
+          sbom: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign published image tags
+        env:
+          TAGS: ${{ steps.images.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              cosign sign --yes "${tag}@${DIGEST}"
+            fi
+          done <<EOF
+          ${TAGS}
+          EOF
+
+      - name: Summary
+        run: |
+          echo "## Docker Publish Successful" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: ${{ steps.release.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tags:" >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              echo "  - \`${tag}\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done <<EOF
+          ${{ steps.images.outputs.tags }}
+          EOF
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "SBOM/provenance attestations were generated by Docker Buildx." >> "$GITHUB_STEP_SUMMARY"
+          echo "Image tags were signed with cosign keyless signing." >> "$GITHUB_STEP_SUMMARY"

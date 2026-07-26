@@ -32,7 +32,7 @@ TEST_CASES = [
     {
         "name": "Health check",
         "method": "GET",
-        "path": "/gateway/health",
+        "path": "/gateway/v1/health",
         "body": None,
         "expect_status": 200,
         "expect_blocked": False,
@@ -175,7 +175,7 @@ def run_test(client: httpx.Client, base_url: str, case: dict) -> bool:
             response.status_code == case["expect_status"]
             and "sentinelguard" in blocked_type
         )
-    elif case["path"] == "/gateway/health":
+    elif case["path"] == "/gateway/v1/health":
         print(f"  Provider:  {data.get('provider')}")
         print(f"  Scanners:  {len(data.get('prompt_scanners', []))} prompt, "
               f"{len(data.get('output_scanners', []))} output")

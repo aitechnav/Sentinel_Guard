@@ -122,7 +122,7 @@ kubectl -n sentinelguard port-forward svc/sentinelguard-gateway 8080:8080
 Health check:
 
 ```bash
-curl http://localhost:8080/gateway/health
+curl http://localhost:8080/gateway/v1/health
 ```
 
 ### Run the test client (Terminal 2)
@@ -150,7 +150,7 @@ curl -s -X POST http://localhost:8080/v1/chat/completions \
 
 | Step | Request | Expected result |
 |------|---------|-----------------|
-| 1 | `GET /gateway/health` | `200` — lists active scanners |
+| 1 | `GET /gateway/v1/health` | `200` — lists active scanners |
 | 2 | Injection prompt | `400` — `sentinelguard_prompt_blocked` |
 | 3 | Jailbreak prompt | `400` — blocked before upstream LLM call |
 | 4 | PII prompt with email/phone | Redacted and forwarded when redaction is enabled, or blocked when policy requires blocking |

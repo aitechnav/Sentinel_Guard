@@ -54,6 +54,9 @@ from sentinelguard.monitoring import (
 
 logger = logging.getLogger(__name__)
 
+GATEWAY_API_VERSION = "v1"
+GATEWAY_API_STABILITY = "stable"
+
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket
     from fastapi.middleware.cors import CORSMiddleware
@@ -98,117 +101,38 @@ def create_gateway_app(
 
     @app.get("/health")
     @app.get("/gateway/health")
+    @app.get("/gateway/v1/health")
     async def health():
-        return {
-            "status": "healthy",
-            "enabled": config.enabled,
-            "provider": effective_provider(config),
-            "upstream_url": effective_upstream_url(config),
-            "api_key_env": effective_api_key_env(config),
-            "provider_pool": [
-                {
-                    "name": provider.name,
-                    "provider": provider.provider,
-                    "private": provider.private,
-                    "priority": provider.priority,
-                    "weight": provider.weight,
-                }
-                for provider in configured_providers(config)
-            ],
-            "fallback_enabled": config.fallback_enabled,
-            "route_pii_to_private_provider": config.route_pii_to_private_provider,
-            "redact_pii": config.redact_pii,
-            "redact_output_pii": config.redact_output_pii,
-            "streaming_mode": config.streaming_mode,
-            "state_backend": config.state_backend,
-            "cache_backend": config.cache_backend,
-            "cache_enabled": config.cache_enabled,
-            "routing_strategy": config.routing_strategy,
-            "health_check_enabled": config.health_check_enabled,
-            "metrics_enabled": config.metrics_enabled,
-            "audit_enabled": config.audit_enabled,
-            "client_auth_enabled": bool(_client_api_key(config) or config.virtual_keys),
-            "virtual_keys": virtual_key_summary(config),
-            "prometheus_available": prometheus_available(),
-            "model_status": model_status(),
-            "prompt_scanners": guard.prompt_scanner_names,
-            "output_scanners": guard.output_scanner_names,
-        }
+        return _health_payload(config, guard)
 
     @app.get("/routes")
+    @app.get("/gateway/v1/routes")
     async def routes():
-        endpoints = [
-            "/v1/chat/completions",
-            "/v1/models",
-            "/models",
-            "/routes",
-            "/health",
-            "/gateway/health",
-            "/gateway/usage",
-            "/gateway/provider-health",
-        ]
-        if config.admin_ui_enabled:
-            endpoints.append("/admin")
-        if config.mcp_gateway_enabled:
-            endpoints.append("/mcp/{path}")
-        if config.a2a_gateway_enabled:
-            endpoints.append("/a2a/{path}")
-        if config.realtime_gateway_enabled:
-            endpoints.extend(["/v1/realtime", "/realtime"])
-        if config.metrics_enabled:
-            endpoints.append("/metrics")
-        return {
-            "object": "list",
-            "gateway": "sentinelguard",
-            "endpoints": endpoints,
-            "models": available_gateway_models(config),
-            "providers": [
-                {
-                    "name": provider.name,
-                    "provider": provider.provider,
-                    "model_name": provider.model_name,
-                    "upstream_model": provider.upstream_model,
-                    "private": provider.private,
-                    "priority": provider.priority,
-                    "weight": provider.weight,
-                    "enabled": provider.enabled,
-                }
-                for provider in configured_providers(config)
-            ],
-        }
+        return _routes_payload(config)
 
     @app.get("/models")
     @app.get("/v1/models")
+    @app.get("/gateway/v1/models")
     async def models():
-        return {"object": "list", "data": available_gateway_models(config)}
+        return _models_payload(config)
 
     @app.get("/gateway/usage")
+    @app.get("/gateway/v1/usage")
     async def usage(request: Request):
         auth = authenticate_gateway_request(request.headers, config)
         if not auth.allowed or auth.client is None:
             return _gateway_error_response(auth.status_code, auth.error_type, auth.message)
-        return {
-            "object": "sentinelguard.gateway.usage",
-            "client": {
-                "name": auth.client.name,
-                "tenant_id": auth.client.tenant_id,
-                "team_id": auth.client.team_id,
-                "user_id": auth.client.user_id,
-            },
-            "usage": usage_store.snapshot(
-                auth.client.key_id,
-                auth.client.budget_reset,
-            ).to_dict(),
-        }
+        return _usage_payload(auth.client, usage_store)
 
     @app.get("/gateway/provider-health")
+    @app.get("/gateway/v1/provider-health")
     async def provider_health():
-        from sentinelguard.gateway.providers import provider_health_snapshot
+        return _provider_health_payload(config)
 
-        return {
-            "object": "sentinelguard.gateway.provider_health",
-            "providers": provider_health_snapshot(config),
-        }
+    @app.get("/gateway/v1")
+    @app.get("/gateway/v1/contract")
+    async def gateway_contract():
+        return _gateway_contract_payload(config)
 
     if config.admin_ui_enabled:
 
@@ -659,6 +583,182 @@ def _record_gateway_usage(
     )
 
 
+def _health_payload(config: GatewayConfig, guard: SentinelGuard) -> dict[str, Any]:
+    return {
+        "object": "sentinelguard.gateway.health",
+        "api_version": GATEWAY_API_VERSION,
+        "stability": GATEWAY_API_STABILITY,
+        "status": "healthy",
+        "enabled": config.enabled,
+        "provider": effective_provider(config),
+        "upstream_url": effective_upstream_url(config),
+        "api_key_env": effective_api_key_env(config),
+        "provider_pool": [
+            {
+                "name": provider.name,
+                "provider": provider.provider,
+                "private": provider.private,
+                "priority": provider.priority,
+                "weight": provider.weight,
+            }
+            for provider in configured_providers(config)
+        ],
+        "fallback_enabled": config.fallback_enabled,
+        "route_pii_to_private_provider": config.route_pii_to_private_provider,
+        "redact_pii": config.redact_pii,
+        "redact_output_pii": config.redact_output_pii,
+        "streaming_mode": config.streaming_mode,
+        "state_backend": config.state_backend,
+        "cache_backend": config.cache_backend,
+        "cache_enabled": config.cache_enabled,
+        "routing_strategy": config.routing_strategy,
+        "health_check_enabled": config.health_check_enabled,
+        "metrics_enabled": config.metrics_enabled,
+        "audit_enabled": config.audit_enabled,
+        "client_auth_enabled": bool(_client_api_key(config) or config.virtual_keys),
+        "virtual_keys": virtual_key_summary(config),
+        "prometheus_available": prometheus_available(),
+        "model_status": model_status(),
+        "prompt_scanners": guard.prompt_scanner_names,
+        "output_scanners": guard.output_scanner_names,
+    }
+
+
+def _routes_payload(config: GatewayConfig) -> dict[str, Any]:
+    endpoints = _gateway_endpoints(config)
+    return {
+        "object": "sentinelguard.gateway.routes",
+        "api_version": GATEWAY_API_VERSION,
+        "stability": GATEWAY_API_STABILITY,
+        "gateway": "sentinelguard",
+        "endpoints": endpoints["all"],
+        "stable_management_endpoints": endpoints["stable_management"],
+        "openai_compatible_endpoints": endpoints["openai_compatible"],
+        "compatibility_endpoints": endpoints["compatibility"],
+        "models": available_gateway_models(config),
+        "providers": [
+            {
+                "name": provider.name,
+                "provider": provider.provider,
+                "model_name": provider.model_name,
+                "upstream_model": provider.upstream_model,
+                "private": provider.private,
+                "priority": provider.priority,
+                "weight": provider.weight,
+                "enabled": provider.enabled,
+            }
+            for provider in configured_providers(config)
+        ],
+    }
+
+
+def _models_payload(config: GatewayConfig) -> dict[str, Any]:
+    return {
+        "object": "list",
+        "api_version": GATEWAY_API_VERSION,
+        "data": available_gateway_models(config),
+    }
+
+
+def _usage_payload(client: GatewayClient, usage_store: Any) -> dict[str, Any]:
+    return {
+        "object": "sentinelguard.gateway.usage",
+        "api_version": GATEWAY_API_VERSION,
+        "client": {
+            "name": client.name,
+            "tenant_id": client.tenant_id,
+            "team_id": client.team_id,
+            "user_id": client.user_id,
+        },
+        "usage": usage_store.snapshot(
+            client.key_id,
+            client.budget_reset,
+        ).to_dict(),
+    }
+
+
+def _provider_health_payload(config: GatewayConfig) -> dict[str, Any]:
+    from sentinelguard.gateway.providers import provider_health_snapshot
+
+    return {
+        "object": "sentinelguard.gateway.provider_health",
+        "api_version": GATEWAY_API_VERSION,
+        "providers": provider_health_snapshot(config),
+    }
+
+
+def _gateway_contract_payload(config: GatewayConfig) -> dict[str, Any]:
+    endpoints = _gateway_endpoints(config)
+    return {
+        "object": "sentinelguard.gateway.contract",
+        "gateway": "sentinelguard",
+        "api_version": GATEWAY_API_VERSION,
+        "stability": GATEWAY_API_STABILITY,
+        "base_path": "/gateway/v1",
+        "openai_base_path": "/v1",
+        "stable_management_endpoints": {
+            "health": "/gateway/v1/health",
+            "routes": "/gateway/v1/routes",
+            "models": "/gateway/v1/models",
+            "usage": "/gateway/v1/usage",
+            "provider_health": "/gateway/v1/provider-health",
+            "contract": "/gateway/v1/contract",
+        },
+        "openai_compatible_endpoints": endpoints["openai_compatible"],
+        "compatibility_endpoints": endpoints["compatibility"],
+        "auth": {
+            "client_auth_enabled": bool(_client_api_key(config) or config.virtual_keys),
+            "headers": ["Authorization: Bearer <token>", "X-API-Key", "X-SentinelGuard-API-Key"],
+            "usage_requires_auth": True,
+        },
+        "streaming": {
+            "supported": True,
+            "mode": config.streaming_mode,
+            "safe_default": "buffered",
+        },
+    }
+
+
+def _gateway_endpoints(config: GatewayConfig) -> dict[str, list[str]]:
+    openai_compatible = ["/v1/chat/completions", "/v1/models"]
+    stable_management = [
+        "/gateway/v1",
+        "/gateway/v1/contract",
+        "/gateway/v1/health",
+        "/gateway/v1/routes",
+        "/gateway/v1/models",
+        "/gateway/v1/usage",
+        "/gateway/v1/provider-health",
+    ]
+    compatibility = [
+        "/models",
+        "/routes",
+        "/health",
+        "/gateway/health",
+        "/gateway/usage",
+        "/gateway/provider-health",
+    ]
+    optional = []
+    if config.admin_ui_enabled:
+        optional.append("/admin")
+    if config.mcp_gateway_enabled:
+        optional.append("/mcp/{path}")
+    if config.a2a_gateway_enabled:
+        optional.append("/a2a/{path}")
+    if config.realtime_gateway_enabled:
+        optional.extend(["/v1/realtime", "/realtime"])
+    if config.metrics_enabled:
+        optional.append("/metrics")
+
+    return {
+        "openai_compatible": openai_compatible,
+        "stable_management": stable_management,
+        "compatibility": compatibility,
+        "optional": optional,
+        "all": openai_compatible + stable_management + compatibility + optional,
+    }
+
+
 def _admin_html() -> str:
     return """<!doctype html>
 <html lang="en">
@@ -684,11 +784,12 @@ def _admin_html() -> str:
     <section>
       <h2>Operations</h2>
       <ul>
-        <li><a href="/routes">Routes and providers</a></li>
-        <li><a href="/v1/models">Models</a></li>
-        <li><a href="/gateway/provider-health">Provider health</a></li>
-        <li><a href="/gateway/health">Gateway health</a></li>
-        <li><code>/gateway/usage</code> requires your gateway API key.</li>
+        <li><a href="/gateway/v1/routes">Routes and providers</a></li>
+        <li><a href="/gateway/v1/models">Models</a></li>
+        <li><a href="/gateway/v1/provider-health">Provider health</a></li>
+        <li><a href="/gateway/v1/health">Gateway health</a></li>
+        <li><a href="/gateway/v1/contract">Stable API contract</a></li>
+        <li><code>/gateway/v1/usage</code> requires your gateway API key.</li>
       </ul>
     </section>
   </main>

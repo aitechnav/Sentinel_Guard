@@ -12,6 +12,9 @@ Usage:
     sentinelguard gateway --provider anthropic --port 8080
     sentinelguard gateway --provider gemini --port 8080
     sentinelguard config show
+    sentinelguard config set prompt_scanners.pii.threshold 0.3
+    sentinelguard config disable toxicity --type prompt
+    sentinelguard gateway-config set gateway.routing_strategy weighted
     sentinelguard scanners list
 """
 
@@ -58,8 +61,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     init_parser.add_argument(
         "--docker-image",
-        default="sentinelguard/sentinelguard-gateway:latest",
-        help="Docker image name written into docker-compose.sentinelguard.yml",
+        default="sentinelguard-gateway:local",
+        help="Docker image tag written into docker-compose.sentinelguard.yml",
     )
     init_parser.add_argument(
         "--without-docker",
@@ -127,7 +130,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     # ── config command ──
     config_parser = subparsers.add_parser("config", help="Manage configuration")
     config_sub = config_parser.add_subparsers(dest="config_action")
-    config_sub.add_parser("show", help="Show current configuration")
+    config_show = config_sub.add_parser("show", help="Show current configuration")
+    config_show.add_argument("--file", type=str, help="Read config from YAML file")
     config_init = config_sub.add_parser("init", help="Create default config file")
     config_init.add_argument(
         "--preset",
@@ -137,6 +141,58 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     config_init.add_argument(
         "--output", type=str, default="sentinelguard.yaml", help="Output file path"
+    )
+    config_get = config_sub.add_parser("get", help="Read a config value")
+    config_get.add_argument("path", help="Dot path, such as prompt_scanners.pii.enabled")
+    config_get.add_argument(
+        "--file", type=str, default="sentinelguard.yaml", help="Config file path"
+    )
+    config_set = config_sub.add_parser("set", help="Update a config value")
+    config_set.add_argument("path", help="Dot path, such as prompt_scanners.pii.threshold")
+    config_set.add_argument("value", help="YAML value, such as true, 0.3, or strict")
+    config_set.add_argument(
+        "--file", type=str, default="sentinelguard.yaml", help="Config file path"
+    )
+    for action in ("enable", "disable"):
+        scanner_toggle = config_sub.add_parser(action, help=f"{action.title()} a scanner")
+        scanner_toggle.add_argument("scanner", help="Scanner name, such as pii or secrets")
+        scanner_toggle.add_argument(
+            "--type",
+            choices=["prompt", "output"],
+            default="prompt",
+            help="Scanner group to update",
+        )
+        scanner_toggle.add_argument(
+            "--file", type=str, default="sentinelguard.yaml", help="Config file path"
+        )
+
+    # ── gateway-config command ──
+    gateway_config_parser = subparsers.add_parser(
+        "gateway-config", help="Manage gateway configuration"
+    )
+    gateway_config_sub = gateway_config_parser.add_subparsers(dest="gateway_config_action")
+    gateway_config_show = gateway_config_sub.add_parser(
+        "show", help="Show gateway configuration"
+    )
+    gateway_config_show.add_argument(
+        "--file", type=str, default="sentinelguard-gateway.yaml", help="Gateway config path"
+    )
+    gateway_config_get = gateway_config_sub.add_parser("get", help="Read a gateway value")
+    gateway_config_get.add_argument(
+        "path", help="Dot path, such as gateway.routing_strategy"
+    )
+    gateway_config_get.add_argument(
+        "--file", type=str, default="sentinelguard-gateway.yaml", help="Gateway config path"
+    )
+    gateway_config_set = gateway_config_sub.add_parser(
+        "set", help="Update a gateway value"
+    )
+    gateway_config_set.add_argument(
+        "path", help="Dot path, such as gateway.providers.0.priority"
+    )
+    gateway_config_set.add_argument("value", help="YAML value, such as true or weighted")
+    gateway_config_set.add_argument(
+        "--file", type=str, default="sentinelguard-gateway.yaml", help="Gateway config path"
     )
 
     # ── scanners command ──
@@ -161,6 +217,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_gateway(args)
     elif args.command == "config":
         return _handle_config(args)
+    elif args.command == "gateway-config":
+        return _handle_gateway_config(args)
     elif args.command == "scanners":
         return _handle_scanners(args)
     else:
@@ -394,22 +452,102 @@ def _parse_bool(value: str) -> bool:
 def _handle_config(args: argparse.Namespace) -> int:
     """Handle the config command."""
     from sentinelguard.core.config import GuardConfig
+    from sentinelguard.cli.config_edit import (
+        format_cli_value,
+        get_path,
+        load_yaml_mapping,
+        parse_cli_value,
+        save_yaml_mapping,
+        set_path,
+        set_scanner_enabled,
+    )
 
-    if args.config_action == "show":
-        config = GuardConfig.preset_standard()
-        print(json.dumps(config.to_dict(), indent=2))
-    elif args.config_action == "init":
-        if args.preset == "minimal":
-            config = GuardConfig.preset_minimal()
-        elif args.preset == "strict":
-            config = GuardConfig.preset_strict()
+    try:
+        if args.config_action == "show":
+            if args.file:
+                data = load_yaml_mapping(args.file)
+                print(json.dumps(data, indent=2))
+            else:
+                config = GuardConfig.preset_standard()
+                print(json.dumps(config.to_dict(), indent=2))
+        elif args.config_action == "init":
+            if args.preset == "minimal":
+                config = GuardConfig.preset_minimal()
+            elif args.preset == "strict":
+                config = GuardConfig.preset_strict()
+            else:
+                config = GuardConfig.preset_standard()
+
+            config.save_yaml(args.output)
+            print(f"Configuration saved to {args.output}")
+        elif args.config_action == "get":
+            data = load_yaml_mapping(args.file)
+            print(format_cli_value(get_path(data, args.path)))
+        elif args.config_action == "set":
+            data = load_yaml_mapping(args.file)
+            value = parse_cli_value(args.value)
+            set_path(data, args.path, value)
+            GuardConfig.from_dict(data)
+            save_yaml_mapping(args.file, data)
+            print(f"Updated {args.file}: {args.path} = {format_cli_value(value)}")
+        elif args.config_action in {"enable", "disable"}:
+            data = load_yaml_mapping(args.file)
+            enabled = args.config_action == "enable"
+            updated_path = set_scanner_enabled(
+                data,
+                scanner_type=args.type,
+                scanner_name=args.scanner,
+                enabled=enabled,
+            )
+            GuardConfig.from_dict(data)
+            save_yaml_mapping(args.file, data)
+            print(f"Updated {args.file}: {updated_path} = {format_cli_value(enabled)}")
         else:
-            config = GuardConfig.preset_standard()
+            print("Use: sentinelguard config show|init|get|set|enable|disable")
+    except (FileNotFoundError, KeyError, IndexError, ValueError) as exc:
+        print(f"Error: {exc}")
+        return 1
 
-        config.save_yaml(args.output)
-        print(f"Configuration saved to {args.output}")
-    else:
-        print("Use: sentinelguard config show|init")
+    return 0
+
+
+def _handle_gateway_config(args: argparse.Namespace) -> int:
+    """Handle the gateway-config command."""
+    from pathlib import Path
+
+    from sentinelguard.cli.config_edit import (
+        format_cli_value,
+        get_path,
+        load_yaml_mapping,
+        parse_cli_value,
+        save_yaml_mapping,
+        set_path,
+    )
+    from sentinelguard.gateway.config import GatewayConfig
+
+    try:
+        if args.gateway_config_action == "show":
+            config_path = Path(args.file)
+            if config_path.exists():
+                data = load_yaml_mapping(config_path)
+            else:
+                data = {"gateway": GatewayConfig().to_dict()}
+            print(json.dumps(data, indent=2))
+        elif args.gateway_config_action == "get":
+            data = load_yaml_mapping(args.file)
+            print(format_cli_value(get_path(data, args.path)))
+        elif args.gateway_config_action == "set":
+            data = load_yaml_mapping(args.file)
+            value = parse_cli_value(args.value)
+            set_path(data, args.path, value)
+            GatewayConfig.from_dict(data)
+            save_yaml_mapping(args.file, data)
+            print(f"Updated {args.file}: {args.path} = {format_cli_value(value)}")
+        else:
+            print("Use: sentinelguard gateway-config show|get|set")
+    except (FileNotFoundError, KeyError, IndexError, ValueError) as exc:
+        print(f"Error: {exc}")
+        return 1
 
     return 0
 
