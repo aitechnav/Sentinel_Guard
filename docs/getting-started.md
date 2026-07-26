@@ -67,9 +67,9 @@ Gateway mode usually has two kinds of keys:
 - An upstream provider key, such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   `GEMINI_API_KEY`, or `MOONSHOT_API_KEY`. SentinelGuard uses this to call the
   model provider.
-- `SENTINELGUARD_GATEWAY_API_KEY`, a client-facing token that you generate.
-  Applications and IDEs use this token when they call SentinelGuard at
-  `http://localhost:8080/v1`.
+- `SENTINELGUARD_GATEWAY_API_KEY`, the gateway client token created by the
+  team running SentinelGuard. Applications and IDEs use this token when they
+  call SentinelGuard at `http://localhost:8080/v1`.
 
 For local testing, generate the gateway token locally:
 
@@ -83,11 +83,10 @@ Or set it in your shell directly:
 export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"
 ```
 
-You do not get this value from an LLM provider or a SentinelGuard cloud
-account. It is a random local secret for your own gateway.
-Generate it once, then use the same `sgw_...` value in the SentinelGuard
-gateway environment and in your app or IDE API-key field. If you run
-`sentinelguard token` again, it creates a different token.
+This token is separate from upstream provider API keys. Generate it once, then
+use the same `sgw_...` value in the SentinelGuard gateway environment and in
+your app or IDE API-key field. If you run `sentinelguard token` again, it
+creates a different token.
 
 Package-mode library usage does not need `SENTINELGUARD_GATEWAY_API_KEY`.
 Gateway mode uses it to protect the local or shared proxy endpoint, so clients

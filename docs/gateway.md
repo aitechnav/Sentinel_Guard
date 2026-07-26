@@ -15,14 +15,12 @@ Application or IDE
 The example below uses two different keys:
 
 - `OPENAI_API_KEY` is the upstream provider key used by SentinelGuard to call OpenAI.
-- `SENTINELGUARD_GATEWAY_API_KEY` is a client-facing token that you generate. Your
-  apps, IDEs, and SDKs use this token when calling SentinelGuard at
-  `http://localhost:8080/v1`.
+- `SENTINELGUARD_GATEWAY_API_KEY` is the gateway client token created by the
+  team running SentinelGuard. Apps, IDEs, and SDKs use this token when calling
+  SentinelGuard at `http://localhost:8080/v1`.
 
-You do not get `SENTINELGUARD_GATEWAY_API_KEY` from OpenAI, Anthropic, Google,
-or a SentinelGuard cloud account. It is a random local secret for your own
-SentinelGuard gateway. Generate it once, then use the same value in both
-places:
+This token is separate from upstream provider API keys. Generate it once for
+your gateway, then use the same value in both places:
 
 - The SentinelGuard gateway environment, as `SENTINELGUARD_GATEWAY_API_KEY`.
 - Your app, SDK, or IDE API-key field when its base URL points to
