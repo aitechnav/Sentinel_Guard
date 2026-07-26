@@ -44,7 +44,8 @@ GET /v1/models
 Applications, SDKs, and IDEs should use `/v1` as the OpenAI-compatible base URL:
 
 ```text
-http://localhost:8080/v1
+Base URL: http://localhost:8080/v1
+API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
 ```
 
 ## Compatibility Aliases

@@ -399,7 +399,9 @@ def _readme(profile: str) -> str:
 
         `OPENAI_API_KEY` is the upstream provider key. The
         `SENTINELGUARD_GATEWAY_API_KEY` value is a client-facing token that you
-        choose for apps and IDEs calling SentinelGuard.
+        generate for apps and IDEs calling SentinelGuard. Use the same `sgw_...`
+        value in the gateway environment and in each app or IDE API-key field.
+        Keep the real upstream provider key only on the SentinelGuard gateway.
 
         ## Run With Docker Compose
 
@@ -417,8 +419,15 @@ def _readme(profile: str) -> str:
 
         ```text
         Base URL: http://localhost:8080/v1
-        API key:  the value of SENTINELGUARD_GATEWAY_API_KEY
+        API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
         Model:    fast-chat, smart-chat, or private-chat
+        ```
+
+        For OpenAI SDK-compatible app settings:
+
+        ```bash
+        export OPENAI_BASE_URL="http://localhost:8080/v1"
+        export OPENAI_API_KEY="$SENTINELGUARD_GATEWAY_API_KEY"
         ```
 
         Use `fast-chat` for OpenAI, `smart-chat` for Anthropic, and

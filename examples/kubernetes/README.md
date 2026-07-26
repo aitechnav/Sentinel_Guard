@@ -80,6 +80,19 @@ For in-cluster apps:
 http://sentinelguard-gateway.sentinelguard.svc.cluster.local:8080/v1
 ```
 
+Application pod environment example:
+
+```yaml
+env:
+  - name: OPENAI_BASE_URL
+    value: http://sentinelguard-gateway.sentinelguard.svc.cluster.local:8080/v1
+  - name: OPENAI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: sentinelguard-client-token
+        key: SENTINELGUARD_GATEWAY_API_KEY
+```
+
 For local IDEs such as Cursor, VS Code extensions, Kiro, or Codex-compatible
 OpenAI clients, use port-forwarding or an internal Ingress/LoadBalancer and set
 the OpenAI-compatible base URL to:
@@ -89,7 +102,9 @@ http://localhost:8080/v1
 ```
 
 Use your `SENTINELGUARD_GATEWAY_API_KEY` value as the client API key when
-gateway client auth is enabled.
+gateway client auth is enabled. Do not put the upstream provider key in the IDE
+or app client settings; keep that key in the Kubernetes Secret used by the
+SentinelGuard gateway.
 
 ## Optional Ingress
 
