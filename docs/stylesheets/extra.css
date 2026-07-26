@@ -59,17 +59,10 @@
   text-decoration: none !important;
 }
 
-.sg-brand-mark {
-  align-items: center;
-  background: var(--sg-primary);
-  border-radius: 0.35rem;
-  color: #ffffff;
-  display: inline-flex;
-  font-size: 0.72rem;
-  height: 1.7rem;
-  justify-content: center;
-  letter-spacing: 0;
-  width: 1.7rem;
+.sg-brand-logo {
+  display: block;
+  height: 1.9rem;
+  width: 1.9rem;
 }
 
 .sg-nav-links {

@@ -6,21 +6,13 @@ description: Security-first LLM gateway and guardrails framework for AI applicat
 <div class="sg-page">
   <nav class="sg-product-nav" aria-label="SentinelGuard links">
     <a class="sg-brand" href="index.html" aria-label="SentinelGuard home">
-      <span class="sg-brand-mark">SG</span>
+      <img class="sg-brand-logo" src="assets/images/sentinelguard-logo.svg" alt="" />
       <span>SentinelGuard</span>
     </a>
     <div class="sg-nav-links">
       <a href="getting-started.html">Docs</a>
       <a href="gateway.html">Gateway</a>
       <a href="deployment.html">Deploy</a>
-      <a
-        class="github-button"
-        href="https://github.com/aitechnav/Sentinel_Guard"
-        data-icon="octicon-star"
-        data-size="large"
-        data-show-count="true"
-        aria-label="Star aitechnav/Sentinel_Guard on GitHub"
-      >Star</a>
     </div>
   </nav>
 
@@ -80,7 +72,7 @@ sentinelguard gateway \
     </div>
     <div>
       <strong>2 modes</strong>
-      <span>library and proxy</span>
+      <span>package and proxy</span>
     </div>
     <div>
       <strong>local</strong>
@@ -174,5 +166,3 @@ print(result.is_valid, result.failed_scanners)</code></pre>
     </div>
   </section>
 </div>
-
-<script async defer src="https://buttons.github.io/buttons.js"></script>

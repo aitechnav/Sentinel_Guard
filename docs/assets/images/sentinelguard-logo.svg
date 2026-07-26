@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">SentinelGuard logo</title>
+  <desc id="desc">A shield with gateway routing lines for LLM security.</desc>
+  <defs>
+    <linearGradient id="shield" x1="12" y1="8" x2="52" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2d5be3"/>
+      <stop offset="1" stop-color="#0b8f8f"/>
+    </linearGradient>
+    <linearGradient id="route" x1="21" y1="23" x2="46" y2="42" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d8fff7"/>
+    </linearGradient>
+  </defs>
+  <path
+    fill="url(#shield)"
+    d="M32 5.5 53 13v15.3c0 14.5-8.2 25.2-21 30.2C19.2 53.5 11 42.8 11 28.3V13l21-7.5Z"
+  />
+  <path
+    fill="none"
+    stroke="#ffffff"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="3"
+    d="M22 23.5h15.5c4.4 0 7.5 3 7.5 7.1 0 4.2-3.1 7.2-7.5 7.2H25.7"
+    opacity=".92"
+  />
+  <path
+    fill="none"
+    stroke="url(#route)"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="3"
+    d="m31 17 7 6.5-7 6.5M33 31.5l-7.2 6.3 7.2 6.7"
+  />
+  <circle cx="21.5" cy="23.5" r="4.2" fill="#ffffff"/>
+  <circle cx="21.5" cy="23.5" r="2" fill="#2347a5"/>
+  <circle cx="24.8" cy="37.8" r="4.2" fill="#ffffff"/>
+  <circle cx="24.8" cy="37.8" r="2" fill="#087f83"/>
+</svg>
