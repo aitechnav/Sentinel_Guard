@@ -1,0 +1,5 @@
+title: SentinelGuard
+description: Security-first LLM gateway and guardrails framework for AI applications
+theme: jekyll-theme-primer
+plugins:
+  - jekyll-seo-tag

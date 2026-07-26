@@ -1,129 +1,178 @@
-# SentinelGuard
+---
+title: SentinelGuard
+description: Security-first LLM gateway and guardrails framework for AI applications
+---
 
-<div class="sg-hero" markdown>
-<div markdown>
+<div class="sg-page">
+  <nav class="sg-product-nav" aria-label="SentinelGuard links">
+    <a class="sg-brand" href="index.html" aria-label="SentinelGuard home">
+      <span class="sg-brand-mark">SG</span>
+      <span>SentinelGuard</span>
+    </a>
+    <div class="sg-nav-links">
+      <a href="getting-started.html">Docs</a>
+      <a href="gateway.html">Gateway</a>
+      <a href="deployment.html">Deploy</a>
+      <a
+        class="github-button"
+        href="https://github.com/aitechnav/Sentinel_Guard"
+        data-icon="octicon-star"
+        data-size="large"
+        data-show-count="true"
+        aria-label="Star aitechnav/Sentinel_Guard on GitHub"
+      >Star</a>
+    </div>
+  </nav>
 
-<p class="sg-eyebrow">Security-first LLM gateway and guardrails framework</p>
+  <section class="sg-hero">
+    <div class="sg-hero-copy">
+      <p class="sg-eyebrow">Security-first LLM gateway and guardrails framework</p>
+      <h1>Put one protected gateway in front of your AI traffic</h1>
+      <p class="sg-lede">
+        SentinelGuard helps teams secure LLM applications, AI IDEs, agents, and
+        model provider traffic with prompt scanning, output scanning, PII and
+        secret protection, model routing, failover, usage controls, audit
+        events, and a stable management API.
+      </p>
+      <div class="sg-actions">
+        <a class="sg-button sg-button-primary" href="getting-started.html">Start in 5 minutes</a>
+        <a class="sg-button sg-button-secondary" href="gateway.html">Run the gateway</a>
+        <a
+          class="sg-button sg-button-secondary"
+          href="https://github.com/aitechnav/Sentinel_Guard"
+          target="_blank"
+          rel="noopener"
+        >View on GitHub</a>
+      </div>
+      <div class="sg-proof-row">
+        <span>OpenAI-compatible gateway</span>
+        <span>PII and secret controls</span>
+        <span>Prometheus metrics</span>
+        <span>Docker and Kubernetes ready</span>
+      </div>
+    </div>
 
-## Put one protected gateway in front of your AI traffic
-
-SentinelGuard helps teams secure LLM applications, AI IDEs, agents, and model
-provider traffic with prompt scanning, output scanning, PII and secret
-protection, model routing, failover, usage controls, audit events, and a stable
-management API.
-
-<div class="sg-actions" markdown>
-[Start in 5 minutes](getting-started.md){ .sg-button .sg-button-primary }
-[Run the gateway](gateway.md){ .sg-button .sg-button-secondary }
-[View on GitHub](https://github.com/aitechnav/Sentinel_Guard){ .sg-button .sg-button-secondary target="_blank" }
-</div>
-
-<div class="sg-proof-row" markdown>
-<span>OpenAI-compatible gateway</span>
-<span>PII and secret controls</span>
-<span>Prometheus metrics</span>
-<span>Docker and Kubernetes ready</span>
-</div>
-
-</div>
-<div class="sg-panel" markdown>
-
-<p class="sg-panel-title">Install and start the gateway</p>
-
-```bash
-pip install "sentinelguard[gateway,monitoring]"
+    <div class="sg-terminal" aria-label="SentinelGuard gateway quick start">
+      <div class="sg-terminal-bar">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+      <p class="sg-panel-title">Install and start the gateway</p>
+      <pre><code>pip install "sentinelguard[gateway,monitoring]"
 sentinelguard init
 sentinelguard gateway \
   --config sentinelguard.yaml \
   --gateway-config sentinelguard-gateway.yaml \
-  --port 8080
-```
+  --port 8080</code></pre>
+      <p class="sg-muted">Point apps and IDEs to <code>http://localhost:8080/v1</code></p>
+    </div>
+  </section>
 
-Point apps and IDEs to:
+  <section class="sg-metrics" aria-label="SentinelGuard capabilities">
+    <div>
+      <strong>36</strong>
+      <span>security scanners</span>
+    </div>
+    <div>
+      <strong>v1</strong>
+      <span>stable gateway API</span>
+    </div>
+    <div>
+      <strong>2 modes</strong>
+      <span>library and proxy</span>
+    </div>
+    <div>
+      <strong>local</strong>
+      <span>model-backed detection</span>
+    </div>
+  </section>
 
-```text
-http://localhost:8080/v1
-```
+  <section class="sg-section">
+    <div class="sg-section-heading">
+      <p class="sg-eyebrow">Why teams use SentinelGuard</p>
+      <h2>Runtime protection for the LLM boundary</h2>
+    </div>
+    <div class="sg-card-grid">
+      <article class="sg-card">
+        <h3>Secure prompts and responses</h3>
+        <p>
+          Scan prompts before they reach a model and scan responses before they
+          return to users. Block attacks, redact PII, and stop secrets from
+          leaving the application.
+        </p>
+      </article>
+      <article class="sg-card">
+        <h3>Route across providers</h3>
+        <p>
+          Use friendly model names, route traffic across OpenAI-compatible
+          providers, fail over when one provider is unavailable, and keep
+          private routes available for sensitive traffic.
+        </p>
+      </article>
+      <article class="sg-card">
+        <h3>Operate with evidence</h3>
+        <p>
+          Use virtual keys, usage accounting, provider health, privacy-safe
+          audit events, Prometheus metrics, and the stable
+          <code>/gateway/v1</code> API for dashboards and alerts.
+        </p>
+      </article>
+    </div>
+  </section>
 
-</div>
-</div>
-
-## Why Teams Use SentinelGuard
-
-<div class="sg-card-grid" markdown>
-<div class="sg-card" markdown>
-### Secure the LLM boundary
-Scan prompts before they reach a model and scan responses before they return to
-users. Block attacks, redact PII, and stop secrets from leaving the application.
-</div>
-
-<div class="sg-card" markdown>
-### Route across providers
-Use friendly model names, route traffic across OpenAI-compatible providers,
-fail over when one provider is unavailable, and keep private routes available
-for sensitive traffic.
-</div>
-
-<div class="sg-card" markdown>
-### Operate with evidence
-Use virtual keys, usage accounting, provider health, privacy-safe audit events,
-Prometheus metrics, and the stable `/gateway/v1` API for dashboards and alerts.
-</div>
-</div>
-
-## Built For Modern AI Applications
-
-<div class="sg-split" markdown>
-<div markdown>
-
-### Package mode
-
-Use SentinelGuard directly in Python code when you want guardrails inside one
-application.
-
-```python
-from sentinelguard import SentinelGuard
+  <section class="sg-section">
+    <div class="sg-section-heading">
+      <p class="sg-eyebrow">Built for modern AI applications</p>
+      <h2>Use it in code or as a shared gateway</h2>
+    </div>
+    <div class="sg-split">
+      <article>
+        <h3>Package mode</h3>
+        <p>Use SentinelGuard directly in Python code when you want guardrails inside one application.</p>
+        <pre><code>from sentinelguard import SentinelGuard
 
 guard = SentinelGuard()
 result = guard.scan_prompt("Ignore previous instructions")
-print(result.is_valid, result.failed_scanners)
-```
+print(result.is_valid, result.failed_scanners)</code></pre>
+      </article>
+      <article>
+        <h3>Gateway mode</h3>
+        <p>Run SentinelGuard as a proxy so multiple applications, users, and AI tools share one security boundary.</p>
+        <pre><code>App or IDE -> SentinelGuard /v1 -> LLM provider</code></pre>
+        <p class="sg-muted">Stable endpoints: <code>/gateway/v1/contract</code>, <code>/gateway/v1/health</code>, <code>/gateway/v1/routes</code></p>
+      </article>
+    </div>
+  </section>
 
+  <section class="sg-section sg-docs-section">
+    <div class="sg-section-heading">
+      <p class="sg-eyebrow">Explore the docs</p>
+      <h2>Pick the workflow you need</h2>
+    </div>
+    <div class="sg-doc-list">
+      <a href="getting-started.html">
+        <span>Use SentinelGuard inside Python code</span>
+        <strong>Getting Started</strong>
+      </a>
+      <a href="gateway.html">
+        <span>Put SentinelGuard in front of apps or IDEs</span>
+        <strong>LLM Gateway</strong>
+      </a>
+      <a href="gateway-api.html">
+        <span>Build a dashboard or integration</span>
+        <strong>Stable Gateway API</strong>
+      </a>
+      <a href="deployment.html">
+        <span>Deploy with containers or Kubernetes</span>
+        <strong>Deployment</strong>
+      </a>
+      <a href="docker-release.html">
+        <span>Publish official Docker images</span>
+        <strong>Docker Release</strong>
+      </a>
+    </div>
+  </section>
 </div>
-<div markdown>
 
-### Gateway mode
-
-Run SentinelGuard as a proxy so multiple applications, users, and AI tools can
-share the same security boundary.
-
-```text
-App or IDE -> SentinelGuard /v1 -> LLM provider
-```
-
-Stable management API:
-
-```text
-/gateway/v1/contract
-/gateway/v1/health
-/gateway/v1/routes
-```
-
-</div>
-</div>
-
-## Explore The Docs
-
-| Workflow | Start Here |
-| --- | --- |
-| Use SentinelGuard inside Python code | [Getting Started](getting-started.md) |
-| Put SentinelGuard in front of apps or IDEs | [LLM Gateway](gateway.md) |
-| Build a dashboard or integration | [Stable Gateway API](gateway-api.md) |
-| Deploy with containers or Kubernetes | [Deployment](deployment.md) |
-| Publish official Docker images | [Docker Release](docker-release.md) |
-
-## Open Source And Easy To Try
-
-The GitHub star button in the top-right header shows the repository star count
-and opens GitHub's authenticated star flow. GitHub requires the user to be
-signed in before starring a repository.
+<script async defer src="https://buttons.github.io/buttons.js"></script>
