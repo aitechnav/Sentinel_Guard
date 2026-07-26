@@ -53,6 +53,25 @@ print(report.summary())
 pip install sentinelguard
 ```
 
+For gateway mode, install the gateway extra and generate starter files:
+
+```bash
+pip install "sentinelguard[gateway,monitoring]"
+sentinelguard init
+```
+
+`sentinelguard init` creates:
+
+- `sentinelguard.yaml` for scanner policy
+- `sentinelguard-gateway.yaml` for routing, provider, auth, cache, and audit settings
+- `.env.example` for provider and gateway keys
+- `docker-compose.sentinelguard.yml` for container-based gateway deployment
+- `README.sentinelguard.md` with local next steps
+
+This is the recommended install path for macOS, Linux, and Windows. Use native
+Python when installing into an application, or Docker/Docker Desktop when you
+want SentinelGuard to run as a standalone gateway process.
+
 For model-backed prompt injection, jailbreak, secrets, toxicity, and bias
 scanners, install the optional model extra:
 
@@ -157,9 +176,20 @@ the last user message, forwards the safe request upstream, scans the assistant
 response, and returns the safe response.
 
 ```bash
-pip install "sentinelguard[gateway]"
+pip install "sentinelguard[gateway,monitoring]"
 
 export OPENAI_API_KEY="sk-..."
+export SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token"
+sentinelguard init
+sentinelguard gateway \
+  --config sentinelguard.yaml \
+  --gateway-config sentinelguard-gateway.yaml \
+  --port 8080
+```
+
+For a quick single-provider run without generated files:
+
+```bash
 sentinelguard gateway --provider openai --port 8080
 ```
 
@@ -178,12 +208,18 @@ docker run --rm -p 8080:8080 \
 With Docker Compose:
 
 ```bash
+docker build -t sentinelguard-gateway:local .
+sentinelguard init --docker-image sentinelguard-gateway:local
+cp .env.example .env
+# Edit .env and set at least one upstream provider key.
 export OPENAI_API_KEY="sk-..."
 export SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token"
-docker compose up --build
+docker compose -f docker-compose.sentinelguard.yml up
 ```
 
-For local Hugging Face model-backed detection inside the image:
+From this repository, the included `docker-compose.yml` can also build the
+gateway directly. For local Hugging Face model-backed detection inside that
+image:
 
 ```bash
 SENTINELGUARD_EXTRAS=gateway,monitoring,models docker compose up --build

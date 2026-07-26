@@ -6,6 +6,7 @@ configuration, and running the API server.
 Usage:
     sentinelguard scan prompt "Your text here"
     sentinelguard scan output "LLM output here"
+    sentinelguard init
     sentinelguard serve --port 8000
     sentinelguard gateway --provider openai --port 8080
     sentinelguard gateway --provider anthropic --port 8080
@@ -31,6 +32,45 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--version", action="store_true", help="Show version")
 
     subparsers = parser.add_subparsers(dest="command")
+
+    # ── init command ──
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Create starter files for library or gateway use",
+    )
+    init_parser.add_argument(
+        "--profile",
+        choices=["gateway", "library"],
+        default="gateway",
+        help="Setup profile to generate",
+    )
+    init_parser.add_argument(
+        "--preset",
+        choices=["minimal", "standard", "strict"],
+        default="standard",
+        help="Scanner configuration preset",
+    )
+    init_parser.add_argument(
+        "--output-dir",
+        "--dir",
+        default=".",
+        help="Directory where starter files should be created",
+    )
+    init_parser.add_argument(
+        "--docker-image",
+        default="sentinelguard/sentinelguard-gateway:latest",
+        help="Docker image name written into docker-compose.sentinelguard.yml",
+    )
+    init_parser.add_argument(
+        "--without-docker",
+        action="store_true",
+        help="Do not create docker-compose.sentinelguard.yml",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing generated files",
+    )
 
     # ── scan command ──
     scan_parser = subparsers.add_parser("scan", help="Scan text for security issues")
@@ -111,7 +151,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"sentinelguard {__version__}")
         return 0
 
-    if args.command == "scan":
+    if args.command == "init":
+        return _handle_init(args)
+    elif args.command == "scan":
         return _handle_scan(args)
     elif args.command == "serve":
         return _handle_serve(args)
@@ -124,6 +166,58 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         parser.print_help()
         return 0
+
+
+def _handle_init(args: argparse.Namespace) -> int:
+    """Handle the init command."""
+    from sentinelguard.cli.bootstrap import create_project_scaffold
+
+    try:
+        result = create_project_scaffold(
+            args.output_dir,
+            profile=args.profile,
+            preset=args.preset,
+            docker_image=args.docker_image,
+            include_docker=not args.without_docker,
+            force=args.force,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print(f"SentinelGuard {result.profile} setup: {result.output_dir}")
+
+    if result.created:
+        print("\nCreated:")
+        for path in result.created:
+            print(f"  - {path.relative_to(result.output_dir)}")
+
+    if result.skipped:
+        print("\nSkipped existing files:")
+        for path in result.skipped:
+            print(f"  - {path.relative_to(result.output_dir)}")
+        print("\nUse --force to overwrite generated files.")
+
+    if result.profile == "gateway":
+        print("\nNext steps:")
+        print('  1. python -m pip install "sentinelguard[gateway,monitoring]"')
+        print("  2. export SENTINELGUARD_GATEWAY_API_KEY=<gateway-token>")
+        print("  3. export OPENAI_API_KEY=<provider-key>")
+        print(
+            "  4. sentinelguard gateway "
+            "--config sentinelguard.yaml "
+            "--gateway-config sentinelguard-gateway.yaml "
+            "--port 8080"
+        )
+        print("\nOpenAI-compatible base URL:")
+        print("  http://localhost:8080/v1")
+    else:
+        print("\nNext steps:")
+        print("  1. python -m pip install sentinelguard")
+        print("  2. from sentinelguard import SentinelGuard")
+        print('  3. guard = SentinelGuard.from_config("sentinelguard.yaml")')
+
+    return 0
 
 
 def _handle_scan(args: argparse.Namespace) -> int:

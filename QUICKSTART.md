@@ -8,6 +8,13 @@ Get up and running with SentinelGuard in 5 minutes.
 pip install sentinelguard
 ```
 
+For gateway mode:
+
+```bash
+pip install "sentinelguard[gateway,monitoring]"
+sentinelguard init
+```
+
 For optional model-backed detection with automatic background warmup:
 
 ```bash
@@ -90,8 +97,18 @@ sentinelguard scanners list
 # Start API server
 sentinelguard serve --port 8000
 
-# Start OpenAI-compatible LLM gateway
+# Create gateway starter files
+sentinelguard init
+
+# Start OpenAI-compatible LLM gateway from generated config
 export OPENAI_API_KEY="sk-..."
+export SENTINELGUARD_GATEWAY_API_KEY="local-gateway-token"
+sentinelguard gateway \
+  --config sentinelguard.yaml \
+  --gateway-config sentinelguard-gateway.yaml \
+  --port 8080
+
+# Or start a quick single-provider gateway without config files
 sentinelguard gateway --provider openai --port 8080
 
 # Or use a native provider adapter
