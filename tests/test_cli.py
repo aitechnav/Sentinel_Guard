@@ -33,12 +33,17 @@ def test_init_gateway_creates_runnable_starter_files(tmp_path, capsys):
     assert gateway_config.state_backend == "sqlite"
     assert gateway_config.state_path == "./.sentinelguard/gateway.sqlite3"
     assert gateway_config.streaming_mode == "buffered"
+    assert gateway_config.complexity_router.enabled is True
+    assert gateway_config.complexity_router.simple_model == "fast-chat"
+    assert gateway_config.complexity_router.complex_model == "smart-chat"
+    assert gateway_config.complexity_router.private_model == "private-chat"
     assert [provider.model_name for provider in gateway_config.providers] == [
         "fast-chat",
         "smart-chat",
         "private-chat",
     ]
     assert gateway_config.virtual_keys[0].allowed_models == [
+        "sentinel-auto",
         "fast-chat",
         "smart-chat",
         "private-chat",

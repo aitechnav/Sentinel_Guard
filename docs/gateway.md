@@ -162,6 +162,77 @@ export MOONSHOT_API_KEY="..."
 sentinelguard gateway --provider kimi --port 8080
 ```
 
+## Automatic Model Routing
+
+SentinelGuard supports gateway-side routing in three practical layers:
+
+| Routing type | Status | How to use it |
+| --- | --- | --- |
+| Rule-based routing | Supported | Use `complexity_router` with `sentinel-auto` to send simple prompts to a lower-cost route and complex prompts to a stronger route. |
+| Cost-aware routing | Supported | Use `routing_strategy: cost-based-routing` inside a provider pool serving the same model alias. |
+| LLM-based routing | Not enabled by default | Keep this as an optional future mode when you want a separate router model; rule-based routing is faster and safer for the default gateway path. |
+
+The generated gateway config exposes these friendly model names:
+
+- `sentinel-auto`: SentinelGuard chooses the route.
+- `fast-chat`: lower-cost route for simple prompts.
+- `smart-chat`: stronger route for complex prompts.
+- `private-chat`: local/private route for sensitive traffic when private routing is enabled.
+
+Example:
+
+```yaml
+gateway:
+  route_pii_to_private_provider: true
+  routing_strategy: cost-based-routing
+  complexity_router:
+    enabled: true
+    strategy: rule-based
+    auto_model_names:
+      - sentinel-auto
+      - auto
+    simple_model: fast-chat
+    complex_model: smart-chat
+    private_model: private-chat
+    preserve_explicit_model: true
+    complexity_threshold: 0.65
+
+  providers:
+    - name: openai-fast
+      provider: openai
+      model_name: fast-chat
+      upstream_model: gpt-4o-mini
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+
+    - name: openai-smart
+      provider: openai
+      model_name: smart-chat
+      upstream_model: gpt-4o
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+
+    - name: ollama-private
+      provider: ollama
+      model_name: private-chat
+      upstream_model: llama3.1
+      private: true
+```
+
+Apps and IDEs can then use:
+
+```text
+Base URL: http://localhost:8080/v1
+API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
+Model:    sentinel-auto
+```
+
+With `preserve_explicit_model: true`, SentinelGuard only auto-routes requests
+whose model is one of `auto_model_names`. If a client explicitly requests
+`fast-chat` or `smart-chat`, SentinelGuard keeps that route. Set
+`preserve_explicit_model: false` only when you want the gateway to override
+client-selected model names.
+
 ## Configure Apps And IDEs
 
 Use this OpenAI-compatible base URL:

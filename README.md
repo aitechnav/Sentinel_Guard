@@ -98,7 +98,7 @@ together.
 | Prompt security | Prompt injection, jailbreak, invisible text, toxicity, supply-chain, data-poisoning, token-limit, and sensitive-data scanners |
 | Output security | Data leakage, system prompt leakage, output sanitization, malicious URL, excessive agency, bias, misinformation, and unsafe output scanners |
 | Sensitive data | PII detection, anonymization, redaction, secret detection, contextual password sharing, PCI/PHI-oriented patterns |
-| Gateway controls | OpenAI-compatible `/v1` API, virtual keys, model aliases, provider pools, routing, failover, streaming support |
+| Gateway controls | OpenAI-compatible `/v1` API, virtual keys, model aliases, complexity routing, provider pools, cost-aware routing, failover, streaming support |
 | Providers | OpenAI, Anthropic Claude, Google Gemini, Kimi/Moonshot, DeepSeek, Mistral, MiniMax, Ollama, Hugging Face router, and custom OpenAI-compatible servers |
 | Deployment | Local Python, Docker, Docker Compose, Kubernetes/EKS, Helm, Terraform examples, EC2/ECS integration patterns |
 | Operations | Stable `/gateway/v1` management API, Prometheus metrics, provider health, usage accounting, privacy-safe audit logs |
@@ -204,7 +204,12 @@ Point clients to SentinelGuard instead of directly to the model provider:
 ```text
 Base URL: http://localhost:8080/v1
 API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
+Model:    sentinel-auto, fast-chat, smart-chat, or private-chat
 ```
+
+Use `sentinel-auto` when you want the gateway to route simple prompts to a
+lower-cost model and complex prompts to a stronger model. Use `fast-chat`,
+`smart-chat`, or another explicit model route when the client should decide.
 
 For OpenAI SDK-compatible applications:
 
@@ -281,6 +286,21 @@ Provider defaults:
 Local model-backed detection is separate from upstream LLM routing. Use
 `sentinelguard[models]` when you want local Hugging Face classifiers to add
 signal for ambiguous prompt attacks, contextual secrets, toxicity, and bias.
+
+## Gateway Routing
+
+SentinelGuard supports:
+
+| Routing mode | Status |
+| --- | --- |
+| Rule-based complexity routing | Supported with `complexity_router` and `sentinel-auto` |
+| Cost-aware provider routing | Supported with `routing_strategy: cost-based-routing` |
+| Least-busy and latency-aware routing | Supported for provider pools |
+| LLM-based routing model | Optional future extension; not enabled in the default request path |
+
+The recommended default is rule-based complexity routing because it is fast,
+deterministic, and does not add another LLM call before every secured request.
+See [LLM Gateway](docs/gateway.md#automatic-model-routing).
 
 ## Observability
 

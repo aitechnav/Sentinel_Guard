@@ -46,7 +46,13 @@ Applications, SDKs, and IDEs should use `/v1` as the OpenAI-compatible base URL:
 ```text
 Base URL: http://localhost:8080/v1
 API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
+Model:    sentinel-auto, fast-chat, smart-chat, or private-chat
 ```
+
+When `complexity_router.enabled` is true, `/gateway/v1/contract`,
+`/gateway/v1/health`, and `/gateway/v1/routes` include the active
+`complexity_router` settings. `/v1/models` and `/gateway/v1/models` also expose
+auto-routing model aliases such as `sentinel-auto`.
 
 ## Compatibility Aliases
 

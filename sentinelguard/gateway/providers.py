@@ -474,6 +474,31 @@ def available_gateway_models(config: GatewayConfig) -> list[dict[str, Any]]:
                 "weight": provider.weight,
             }
         )
+    router = config.complexity_router
+    if router.enabled:
+        configured_names = router.auto_model_names or []
+        auto_model_names = [configured_names] if isinstance(configured_names, str) else configured_names
+        for model_name in auto_model_names:
+            if not model_name:
+                continue
+            models.setdefault(
+                model_name,
+                {
+                    "id": model_name,
+                    "object": "model",
+                    "owned_by": "sentinelguard",
+                    "routing": {
+                        "type": "complexity",
+                        "strategy": router.strategy,
+                        "simple_model": router.simple_model,
+                        "complex_model": router.complex_model,
+                        "private_model": router.private_model,
+                        "preserve_explicit_model": router.preserve_explicit_model,
+                        "complexity_threshold": router.complexity_threshold,
+                    },
+                    "providers": [],
+                },
+            )
     return list(models.values())
 
 

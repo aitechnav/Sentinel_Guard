@@ -61,7 +61,7 @@ The workflow enables:
 Example verification after a release:
 
 ```bash
-cosign verify ghcr.io/aitechnav/sentinelguard-gateway:0.0.9 \
+cosign verify ghcr.io/aitechnav/sentinelguard-gateway:0.0.10 \
   --certificate-identity-regexp 'https://github.com/.*/.github/workflows/docker.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -69,7 +69,7 @@ cosign verify ghcr.io/aitechnav/sentinelguard-gateway:0.0.9 \
 Example SBOM/provenance inspection:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/aitechnav/sentinelguard-gateway:0.0.9
+docker buildx imagetools inspect ghcr.io/aitechnav/sentinelguard-gateway:0.0.10
 ```
 
 ## Manual Release
@@ -77,7 +77,7 @@ docker buildx imagetools inspect ghcr.io/aitechnav/sentinelguard-gateway:0.0.9
 Use the `Publish Docker Image` workflow manually with:
 
 ```text
-version: 0.0.9
+version: 0.0.10
 branch: main
 publish_dockerhub: true
 dockerhub_image: aitechnav/sentinelguard-gateway

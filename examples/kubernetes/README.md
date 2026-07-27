@@ -9,8 +9,8 @@ gateway so prompts and model responses are scanned centrally.
 Build the default gateway image:
 
 ```bash
-docker build -t registry.example.com/sentinelguard-gateway:0.0.9 .
-docker push registry.example.com/sentinelguard-gateway:0.0.9
+docker build -t registry.example.com/sentinelguard-gateway:0.0.10 .
+docker push registry.example.com/sentinelguard-gateway:0.0.10
 ```
 
 For local Hugging Face model-backed detection inside the gateway image:
@@ -18,8 +18,8 @@ For local Hugging Face model-backed detection inside the gateway image:
 ```bash
 docker build \
   --build-arg SENTINELGUARD_EXTRAS=gateway,monitoring,models \
-  -t registry.example.com/sentinelguard-gateway:0.0.9-models .
-docker push registry.example.com/sentinelguard-gateway:0.0.9-models
+  -t registry.example.com/sentinelguard-gateway:0.0.10-models .
+docker push registry.example.com/sentinelguard-gateway:0.0.10-models
 ```
 
 Update `deployment.yaml` to use your pushed image.

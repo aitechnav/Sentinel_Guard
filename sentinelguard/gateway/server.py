@@ -42,6 +42,11 @@ from sentinelguard.gateway.policy import (
     evaluate_output_policy,
     evaluate_prompt_policy,
 )
+from sentinelguard.gateway.routing import (
+    ComplexityRouteDecision,
+    apply_complexity_route,
+    resolve_complexity_route,
+)
 from sentinelguard.models import model_status
 from sentinelguard.monitoring import (
     metrics_content_type,
@@ -197,9 +202,6 @@ def create_gateway_app(
 
         payload = await request.json()
         _validate_payload(payload)
-        access = check_gateway_access(auth.client, payload, usage_store)
-        if not access.allowed:
-            return _gateway_error_response(access.status_code, access.error_type, access.message)
         audit_context = build_audit_context(
             request.headers,
             payload,
@@ -214,9 +216,15 @@ def create_gateway_app(
                 guard,
                 audit_context,
                 auth.client,
+                usage_store,
             )
 
         if not config.enabled:
+            access = check_gateway_access(auth.client, payload, usage_store)
+            if not access.allowed:
+                return _gateway_error_response(
+                    access.status_code, access.error_type, access.message
+                )
             forwarded = await forward_chat_completion_with_failover(
                 payload,
                 request.headers,
@@ -258,6 +266,17 @@ def create_gateway_app(
         upstream_payload = dict(payload)
         if config.sanitize and safe_prompt != prompt_text:
             upstream_payload["messages"] = replace_last_user_text(messages, safe_prompt)
+        upstream_payload, routing_decision = _route_upstream_payload(
+            upstream_payload,
+            safe_prompt,
+            prompt_decision,
+            config,
+        )
+        _emit_routing_decision(config, routing_decision, streaming=False)
+
+        access = check_gateway_access(auth.client, upstream_payload, usage_store)
+        if not access.allowed:
+            return _gateway_error_response(access.status_code, access.error_type, access.message)
 
         cached_body = response_cache.get(upstream_payload, config)
         if cached_body is not None:
@@ -340,6 +359,7 @@ async def _handle_streaming_chat(
     guard: SentinelGuard,
     audit_context: AuditContext,
     client: GatewayClient,
+    usage_store: Any,
 ) -> Any:
     if config.streaming_mode != "buffered":
         raise HTTPException(
@@ -351,6 +371,9 @@ async def _handle_streaming_chat(
     upstream_payload["stream"] = False
 
     if not config.enabled:
+        access = check_gateway_access(client, upstream_payload, usage_store)
+        if not access.allowed:
+            return _gateway_error_response(access.status_code, access.error_type, access.message)
         forwarded = await forward_chat_completion_with_failover(
             upstream_payload,
             headers,
@@ -392,6 +415,17 @@ async def _handle_streaming_chat(
     safe_prompt = prompt_decision.sanitized_text or prompt_text
     if config.sanitize and safe_prompt != prompt_text:
         upstream_payload["messages"] = replace_last_user_text(messages, safe_prompt)
+    upstream_payload, routing_decision = _route_upstream_payload(
+        upstream_payload,
+        safe_prompt,
+        prompt_decision,
+        config,
+    )
+    _emit_routing_decision(config, routing_decision, streaming=True)
+
+    access = check_gateway_access(client, upstream_payload, usage_store)
+    if not access.allowed:
+        return _gateway_error_response(access.status_code, access.error_type, access.message)
 
     forwarded = await forward_chat_completion_with_failover(
         upstream_payload,
@@ -548,6 +582,45 @@ async def _websocket_upstream_to_client(websocket: WebSocket, upstream: Any) -> 
             await websocket.send_text(str(message))
 
 
+def _route_upstream_payload(
+    payload: Mapping[str, Any],
+    prompt_text: str,
+    prompt_decision: PolicyDecision,
+    config: GatewayConfig,
+) -> tuple[dict[str, Any], ComplexityRouteDecision]:
+    routing_decision = resolve_complexity_route(
+        payload,
+        prompt_text,
+        config,
+        route_constraint=prompt_decision.route_constraint,
+        highest_risk=prompt_decision.highest_risk,
+    )
+    return apply_complexity_route(payload, routing_decision), routing_decision
+
+
+def _emit_routing_decision(
+    config: GatewayConfig,
+    decision: ComplexityRouteDecision,
+    *,
+    streaming: bool,
+) -> None:
+    if not config.complexity_router.enabled:
+        return
+    emit_gateway_event(
+        config,
+        "sentinelguard.gateway.routing",
+        {
+            "from_model": decision.original_model,
+            "to_model": decision.model or "",
+            "route_type": decision.route_type,
+            "applied": decision.applied,
+            "score": round(decision.score, 3),
+            "reasons": list(decision.reasons),
+            "streaming": streaming,
+        },
+    )
+
+
 def _record_gateway_usage(
     client: GatewayClient,
     payload: Mapping[str, Any],
@@ -612,6 +685,7 @@ def _health_payload(config: GatewayConfig, guard: SentinelGuard) -> dict[str, An
         "cache_backend": config.cache_backend,
         "cache_enabled": config.cache_enabled,
         "routing_strategy": config.routing_strategy,
+        "complexity_router": config.complexity_router.to_dict(),
         "health_check_enabled": config.health_check_enabled,
         "metrics_enabled": config.metrics_enabled,
         "audit_enabled": config.audit_enabled,
@@ -635,6 +709,8 @@ def _routes_payload(config: GatewayConfig) -> dict[str, Any]:
         "stable_management_endpoints": endpoints["stable_management"],
         "openai_compatible_endpoints": endpoints["openai_compatible"],
         "compatibility_endpoints": endpoints["compatibility"],
+        "routing_strategy": config.routing_strategy,
+        "complexity_router": config.complexity_router.to_dict(),
         "models": available_gateway_models(config),
         "providers": [
             {
@@ -715,6 +791,10 @@ def _gateway_contract_payload(config: GatewayConfig) -> dict[str, Any]:
             "supported": True,
             "mode": config.streaming_mode,
             "safe_default": "buffered",
+        },
+        "routing": {
+            "provider_strategy": config.routing_strategy,
+            "complexity_router": config.complexity_router.to_dict(),
         },
     }
 
