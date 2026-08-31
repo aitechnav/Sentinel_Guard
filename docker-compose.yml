@@ -19,8 +19,13 @@ services:
       HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY:-}
       SENTINELGUARD_GATEWAY_API_KEY: ${SENTINELGUARD_GATEWAY_API_KEY:-}
       SENTINELGUARD_AUDIT_SALT: ${SENTINELGUARD_AUDIT_SALT:-local-dev-salt}
+      SENTINELGUARD_ADMIN_USERNAME: ${SENTINELGUARD_ADMIN_USERNAME:-admin}
+      SENTINELGUARD_ADMIN_PASSWORD: ${SENTINELGUARD_ADMIN_PASSWORD:-sentinelguard}
+      SENTINELGUARD_VIEWER_USERNAME: ${SENTINELGUARD_VIEWER_USERNAME:-viewer}
+      SENTINELGUARD_VIEWER_PASSWORD: ${SENTINELGUARD_VIEWER_PASSWORD:-sentinelguard-readonly}
     volumes:
       - ./examples/gateway/gateway.yaml:/app/gateway.yaml:ro
+      - sentinelguard-state:/data
       - sentinelguard-hf-cache:/root/.cache/huggingface
     command:
       - gateway
@@ -32,4 +37,5 @@ services:
       - /app/gateway.yaml
 
 volumes:
+  sentinelguard-state:
   sentinelguard-hf-cache:

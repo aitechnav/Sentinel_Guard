@@ -17,6 +17,7 @@ from sentinelguard.gateway.operations import (
     authenticate_gateway_request,
     check_gateway_access,
     extract_chat_usage,
+    gateway_usage_store,
 )
 from sentinelguard.gateway.policy import PolicyAction, evaluate_prompt_policy
 from sentinelguard.gateway.providers import (
@@ -62,6 +63,10 @@ class TestGatewayConfig:
         assert config.complexity_router.enabled is False
         assert config.health_check_enabled is True
         assert config.metrics_enabled is True
+        assert config.admin_ui_enabled is True
+        assert config.admin_auth_enabled is True
+        assert config.admin_session_ttl_seconds == 28800
+        assert config.admin_password_env == "SENTINELGUARD_ADMIN_PASSWORD"
         assert config.audit_enabled is True
         assert config.audit_hash_salt_env == "SENTINELGUARD_AUDIT_SALT"
 
@@ -435,6 +440,125 @@ class TestGatewayStableManagementApi:
 
         assert response.status_code == 200
         assert forwarded_payloads[0]["model"] == "strong-model"
+
+
+class TestGatewayAdminDashboard:
+    def test_admin_can_create_client_token_and_client_can_rotate_it(self, tmp_path, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        monkeypatch.setenv("SENTINELGUARD_ADMIN_PASSWORD", "admin-pass")
+        monkeypatch.setenv("SENTINELGUARD_VIEWER_PASSWORD", "viewer-pass")
+        config = GatewayConfig(
+            state_backend="sqlite",
+            state_path=str(tmp_path / "gateway.sqlite3"),
+            providers=[ProviderConfig(name="mock", provider="openai", model_name="fast-chat")],
+        )
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_minimal(),
+            gateway_config=config,
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        assert client.get("/admin/api/summary").status_code == 401
+        assert client.post(
+            "/admin/api/login",
+            json={"username": "admin", "password": "wrong"},
+        ).status_code == 401
+
+        login = client.post(
+            "/admin/api/login",
+            json={"username": "admin", "password": "admin-pass"},
+        )
+        assert login.status_code == 200
+        assert login.json()["user"]["role"] == "admin"
+
+        created = client.post(
+            "/admin/api/clients",
+            json={
+                "name": "chatbot-prod",
+                "tenant_id": "tenant-a",
+                "team_id": "platform",
+                "allowed_models": "fast-chat",
+            },
+        )
+        assert created.status_code == 201
+        created_body = created.json()
+        raw_token = created_body["token"]
+        client_id = created_body["client"]["id"]
+        assert raw_token.startswith("sgw_")
+        assert raw_token.startswith(created_body["client"]["token_prefix"].split("...")[0])
+
+        auth = authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config)
+        assert auth.allowed
+        assert auth.client is not None
+        assert auth.client.name == "chatbot-prod"
+        assert auth.client.team_id == "platform"
+        assert auth.client.allowed_models == ("fast-chat",)
+
+        gateway_usage_store(config).record(
+            auth.client,
+            model="fast-chat",
+            provider="mock",
+            usage=ChatUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5, cost=0.01),
+        )
+        usage = client.get(
+            "/gateway/v1/usage",
+            headers={"authorization": f"Bearer {raw_token}"},
+        ).json()
+        assert usage["usage"]["requests"] == 1
+        assert usage["usage"]["providers"] == {"mock": 1}
+
+        summary = client.get("/admin/api/summary").json()
+        managed = next(item for item in summary["clients"] if item["id"] == client_id)
+        assert managed["usage"]["requests"] == 1
+
+        rotated = client.post(f"/admin/api/clients/{client_id}/rotate")
+        assert rotated.status_code == 200
+        new_token = rotated.json()["token"]
+        assert new_token != raw_token
+        assert not authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config).allowed
+        new_auth = authenticate_gateway_request({"authorization": f"Bearer {new_token}"}, config)
+        assert new_auth.allowed
+        assert new_auth.client is not None
+        assert new_auth.client.key_id == client_id
+        assert client.get(
+            "/gateway/v1/usage",
+            headers={"authorization": f"Bearer {new_token}"},
+        ).json()["usage"]["requests"] == 1
+
+        client_rotated = client.post(
+            "/gateway/v1/client/token/rotate",
+            headers={"authorization": f"Bearer {new_token}"},
+        )
+        assert client_rotated.status_code == 200
+        newest_token = client_rotated.json()["token"]
+        assert newest_token != new_token
+        assert authenticate_gateway_request({"authorization": f"Bearer {newest_token}"}, config).allowed
+
+    def test_viewer_can_read_but_cannot_create_client_token(self, tmp_path, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        monkeypatch.setenv("SENTINELGUARD_ADMIN_PASSWORD", "admin-pass")
+        monkeypatch.setenv("SENTINELGUARD_VIEWER_PASSWORD", "viewer-pass")
+        config = GatewayConfig(
+            state_backend="sqlite",
+            state_path=str(tmp_path / "gateway.sqlite3"),
+        )
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_minimal(),
+            gateway_config=config,
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        login = client.post(
+            "/admin/api/login",
+            json={"username": "viewer", "password": "viewer-pass"},
+        )
+        assert login.status_code == 200
+        assert login.json()["user"]["role"] == "viewer"
+        assert client.get("/admin/api/summary").status_code == 200
+        assert client.post(
+            "/admin/api/clients",
+            json={"name": "should-not-create"},
+        ).status_code == 403
 
 
 class TestGatewayPolicy:

@@ -197,13 +197,31 @@ The gateway uses two different keys:
 Generate the gateway client token once, then use the same `sgw_...` value in
 the gateway environment and in the app or IDE API-key field.
 
+### Built-In Admin Dashboard
+
+Open `http://localhost:8080/admin` to see the gateway dashboard. It includes:
+
+- Login with `admin` and `viewer` roles.
+- Per-client request, token, cost, model, provider, and cache-hit usage.
+- Provider health and routing status.
+- Admin-only client token creation, enable/disable, and rotation.
+- One-time token reveal on create or rotate; SentinelGuard stores only a hash.
+
+For local testing, the fallback credentials are `admin` / `sentinelguard` and
+`viewer` / `sentinelguard-readonly`. For Docker, Kubernetes, or shared
+deployments, set `SENTINELGUARD_ADMIN_PASSWORD` and
+`SENTINELGUARD_VIEWER_PASSWORD` from your secret manager. Dashboard-generated
+client tokens are separate from upstream LLM provider keys. Apps, SDKs, IDEs,
+EKS services, or EC2 services use the generated `sgw_...` token as their API key
+when their base URL points to SentinelGuard.
+
 ## Connect Apps, Services, And IDEs
 
 Point clients to SentinelGuard instead of directly to the model provider:
 
 ```text
 Base URL: http://localhost:8080/v1
-API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
+API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY, or a dashboard-generated client token
 Model:    sentinel-auto, fast-chat, smart-chat, or private-chat
 ```
 

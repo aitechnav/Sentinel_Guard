@@ -189,6 +189,13 @@ class GatewayConfig:
     realtime_gateway_enabled: bool = False
     realtime_upstream_url: Optional[str] = None
     admin_ui_enabled: bool = True
+    admin_auth_enabled: bool = True
+    admin_state_path: Optional[str] = None
+    admin_session_ttl_seconds: int = 28800
+    admin_username_env: str = "SENTINELGUARD_ADMIN_USERNAME"
+    admin_password_env: str = "SENTINELGUARD_ADMIN_PASSWORD"
+    admin_viewer_username_env: str = "SENTINELGUARD_VIEWER_USERNAME"
+    admin_viewer_password_env: str = "SENTINELGUARD_VIEWER_PASSWORD"
     otel_enabled: bool = False
     langfuse_enabled: bool = False
     metrics_enabled: bool = True
@@ -274,6 +281,13 @@ class GatewayConfig:
             "realtime_gateway_enabled": self.realtime_gateway_enabled,
             "realtime_upstream_url": self.realtime_upstream_url,
             "admin_ui_enabled": self.admin_ui_enabled,
+            "admin_auth_enabled": self.admin_auth_enabled,
+            "admin_state_path": self.admin_state_path,
+            "admin_session_ttl_seconds": self.admin_session_ttl_seconds,
+            "admin_username_env": self.admin_username_env,
+            "admin_password_env": self.admin_password_env,
+            "admin_viewer_username_env": self.admin_viewer_username_env,
+            "admin_viewer_password_env": self.admin_viewer_password_env,
             "otel_enabled": self.otel_enabled,
             "langfuse_enabled": self.langfuse_enabled,
             "metrics_enabled": self.metrics_enabled,

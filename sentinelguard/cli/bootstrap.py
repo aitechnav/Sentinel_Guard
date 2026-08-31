@@ -158,6 +158,13 @@ def _gateway_config_yaml() -> str:
           audit_enabled: true
           audit_hash_salt_env: SENTINELGUARD_AUDIT_SALT
           admin_ui_enabled: true
+          admin_auth_enabled: true
+          admin_state_path: ./.sentinelguard/gateway.sqlite3
+          admin_session_ttl_seconds: 28800
+          admin_username_env: SENTINELGUARD_ADMIN_USERNAME
+          admin_password_env: SENTINELGUARD_ADMIN_PASSWORD
+          admin_viewer_username_env: SENTINELGUARD_VIEWER_USERNAME
+          admin_viewer_password_env: SENTINELGUARD_VIEWER_PASSWORD
           otel_enabled: false
           langfuse_enabled: false
 
@@ -225,15 +232,21 @@ def _env_example() -> str:
         f"""\
         # Copy this file to .env for Docker Compose, or export these variables in your shell.
         # Never commit real provider keys.
-        # Generate local SentinelGuard tokens with:
+        # Generate local SentinelGuard tokens and dashboard passwords with:
         #   sentinelguard token
         #   sentinelguard token --prefix sgaudit
+        #   sentinelguard token --prefix sgadmin
+        #   sentinelguard token --prefix sgviewer
 
         SENTINELGUARD_VERSION={__version__}
         SENTINELGUARD_EXTRAS=gateway,monitoring
         SENTINELGUARD_IMAGE=sentinelguard-gateway:local
         SENTINELGUARD_GATEWAY_API_KEY=
         SENTINELGUARD_AUDIT_SALT=
+        SENTINELGUARD_ADMIN_USERNAME=admin
+        SENTINELGUARD_ADMIN_PASSWORD=
+        SENTINELGUARD_VIEWER_USERNAME=viewer
+        SENTINELGUARD_VIEWER_PASSWORD=
         SENTINELGUARD_GATEWAY_PORT=8080
 
         OPENAI_API_KEY=
@@ -255,6 +268,8 @@ def _env_example() -> str:
 def _env_file() -> str:
     gateway_token = generate_gateway_token()
     audit_salt = generate_gateway_token(prefix="sgaudit")
+    admin_password = generate_gateway_token(prefix="sgadmin")
+    viewer_password = generate_gateway_token(prefix="sgviewer")
     return dedent(
         f"""\
         # Local SentinelGuard gateway environment.
@@ -265,6 +280,10 @@ def _env_file() -> str:
         SENTINELGUARD_IMAGE=sentinelguard-gateway:local
         SENTINELGUARD_GATEWAY_API_KEY={gateway_token}
         SENTINELGUARD_AUDIT_SALT={audit_salt}
+        SENTINELGUARD_ADMIN_USERNAME=admin
+        SENTINELGUARD_ADMIN_PASSWORD={admin_password}
+        SENTINELGUARD_VIEWER_USERNAME=viewer
+        SENTINELGUARD_VIEWER_PASSWORD={viewer_password}
         SENTINELGUARD_GATEWAY_PORT=8080
 
         OPENAI_API_KEY=
@@ -340,6 +359,10 @@ def _docker_compose(docker_image: str) -> str:
               OLLAMA_API_KEY: ${{OLLAMA_API_KEY:-}}
               SENTINELGUARD_GATEWAY_API_KEY: ${{SENTINELGUARD_GATEWAY_API_KEY:-}}
               SENTINELGUARD_AUDIT_SALT: ${{SENTINELGUARD_AUDIT_SALT:-local-dev-audit-salt}}
+              SENTINELGUARD_ADMIN_USERNAME: ${{SENTINELGUARD_ADMIN_USERNAME:-admin}}
+              SENTINELGUARD_ADMIN_PASSWORD: ${{SENTINELGUARD_ADMIN_PASSWORD:-sentinelguard}}
+              SENTINELGUARD_VIEWER_USERNAME: ${{SENTINELGUARD_VIEWER_USERNAME:-viewer}}
+              SENTINELGUARD_VIEWER_PASSWORD: ${{SENTINELGUARD_VIEWER_PASSWORD:-sentinelguard-readonly}}
             volumes:
               - ./sentinelguard.yaml:/etc/sentinelguard/sentinelguard.yaml:ro
               - ./sentinelguard-gateway.yaml:/etc/sentinelguard/gateway.yaml:ro

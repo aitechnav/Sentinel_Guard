@@ -97,7 +97,62 @@ For real use, prefer environment variables, `.env` files that are ignored by
 Git, Kubernetes Secrets, or a secret manager. Do not commit real LLM API keys or
 gateway tokens into `sentinelguard-gateway.yaml`.
 
+## Admin Dashboard And Per-Client Tokens
+
+SentinelGuard includes its own gateway dashboard at:
+
+```text
+http://localhost:8080/admin
+```
+
+The dashboard has two roles:
+
+| Role | Access |
+| --- | --- |
+| `admin` | Read usage, create client tokens, rotate tokens, and enable or disable managed clients |
+| `viewer` | Read usage, provider health, and client status only |
+
+Set dashboard credentials with environment variables:
+
+```bash
+export SENTINELGUARD_ADMIN_USERNAME="admin"
+export SENTINELGUARD_ADMIN_PASSWORD="use-a-strong-password"
+export SENTINELGUARD_VIEWER_USERNAME="viewer"
+export SENTINELGUARD_VIEWER_PASSWORD="use-a-readonly-password"
+```
+
+If these password variables are not set, SentinelGuard creates local fallback
+users for development: `admin` / `sentinelguard` and `viewer` /
+`sentinelguard-readonly`. The dashboard shows a warning until real passwords
+are configured.
+
+When an admin creates or rotates a client token, SentinelGuard displays the raw
+`sgw_...` value once. After that, it stores only a hash and a masked prefix.
+The generated token is what a client uses in its API-key field:
+
+```text
+Base URL: http://localhost:8080/v1
+API key:  generated client token from the dashboard
+Model:    sentinel-auto
+```
+
+A dashboard-managed client can also rotate its own token while it still has a
+valid current token:
+
+```bash
+curl -X POST http://localhost:8080/gateway/v1/client/token/rotate \
+  -H "Authorization: Bearer $SENTINELGUARD_CLIENT_TOKEN"
+```
+
+If a client loses its token, an admin should rotate that client from the
+dashboard and update the application, IDE, Kubernetes Secret, ECS task secret,
+or VM environment variable that uses it.
+
 ## Lost Or Rotated Gateway Token
+
+This section applies to CLI-generated or config-managed gateway tokens. For
+dashboard-managed clients, rotate the client from `/admin` and update only that
+client's app or service secret.
 
 `sentinelguard token` is stateless. It does not look up, refresh, or remember
 old tokens. Every time you run it, it prints a new random token.

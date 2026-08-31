@@ -39,7 +39,7 @@ gateway:
   default_max_tokens: 1024
   streaming_mode: buffered
   state_backend: sqlite
-  state_path: /tmp/sentinelguard_gateway.sqlite3
+  state_path: /data/sentinelguard_gateway.sqlite3
   cache_enabled: false
   cache_backend: sqlite
   cache_ttl_seconds: 300
@@ -51,6 +51,13 @@ gateway:
   realtime_gateway_enabled: false
   realtime_upstream_url: ws://localhost:9003/v1/realtime
   admin_ui_enabled: true
+  admin_auth_enabled: true
+  admin_state_path: /data/sentinelguard_gateway.sqlite3
+  admin_session_ttl_seconds: 28800
+  admin_username_env: SENTINELGUARD_ADMIN_USERNAME
+  admin_password_env: SENTINELGUARD_ADMIN_PASSWORD
+  admin_viewer_username_env: SENTINELGUARD_VIEWER_USERNAME
+  admin_viewer_password_env: SENTINELGUARD_VIEWER_PASSWORD
   otel_enabled: false
   langfuse_enabled: false
   metrics_enabled: true

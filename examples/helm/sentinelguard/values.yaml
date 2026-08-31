@@ -1,4 +1,4 @@
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: sentinelguard-gateway
@@ -17,9 +17,12 @@ resources:
     cpu: "1"
     memory: 1Gi
 
+# The built-in dashboard token store uses SQLite by default, so the
+# starter chart runs as one replica. Use config-managed keys or a shared
+# admin-state backend before enabling autoscaling.
 autoscaling:
-  enabled: true
-  minReplicas: 2
+  enabled: false
+  minReplicas: 1
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
 
@@ -40,6 +43,10 @@ env:
   SENTINELGUARD_GATEWAY_API_KEY: ""
   # Generate with: sentinelguard token --prefix sgaudit
   SENTINELGUARD_AUDIT_SALT: ""
+  SENTINELGUARD_ADMIN_USERNAME: "admin"
+  SENTINELGUARD_ADMIN_PASSWORD: ""
+  SENTINELGUARD_VIEWER_USERNAME: "viewer"
+  SENTINELGUARD_VIEWER_PASSWORD: ""
 
 gatewayConfig: |
   gateway:
@@ -53,6 +60,13 @@ gatewayConfig: |
     cache_enabled: true
     cache_backend: sqlite
     cache_ttl_seconds: 300
+    admin_ui_enabled: true
+    admin_auth_enabled: true
+    admin_state_path: /data/sentinelguard_gateway.sqlite3
+    admin_username_env: SENTINELGUARD_ADMIN_USERNAME
+    admin_password_env: SENTINELGUARD_ADMIN_PASSWORD
+    admin_viewer_username_env: SENTINELGUARD_VIEWER_USERNAME
+    admin_viewer_password_env: SENTINELGUARD_VIEWER_PASSWORD
     metrics_enabled: true
     audit_enabled: true
     providers:
