@@ -13,6 +13,17 @@ gateway:
   route_pii_to_private_provider: false
   fallback_enabled: true
   routing_strategy: priority
+  complexity_router:
+    enabled: true
+    strategy: rule-based
+    auto_model_names:
+      - sentinel-auto
+      - auto
+    simple_model: fast-chat
+    complex_model: smart-chat
+    private_model: private-chat
+    preserve_explicit_model: true
+    complexity_threshold: 0.65
   health_check_enabled: true
   unhealthy_ttl_seconds: 30
   failover_status_codes:
@@ -28,7 +39,7 @@ gateway:
   default_max_tokens: 1024
   streaming_mode: buffered
   state_backend: sqlite
-  state_path: /tmp/sentinelguard_gateway.sqlite3
+  state_path: /data/sentinelguard_gateway.sqlite3
   cache_enabled: false
   cache_backend: sqlite
   cache_ttl_seconds: 300
@@ -40,6 +51,13 @@ gateway:
   realtime_gateway_enabled: false
   realtime_upstream_url: ws://localhost:9003/v1/realtime
   admin_ui_enabled: true
+  admin_auth_enabled: true
+  admin_state_path: /data/sentinelguard_gateway.sqlite3
+  admin_session_ttl_seconds: 28800
+  admin_username_env: SENTINELGUARD_ADMIN_USERNAME
+  admin_password_env: SENTINELGUARD_ADMIN_PASSWORD
+  admin_viewer_username_env: SENTINELGUARD_VIEWER_USERNAME
+  admin_viewer_password_env: SENTINELGUARD_VIEWER_PASSWORD
   otel_enabled: false
   langfuse_enabled: false
   metrics_enabled: true
@@ -49,8 +67,10 @@ gateway:
     - name: local-dev
       key_env: SENTINELGUARD_GATEWAY_API_KEY
       allowed_models:
+        - sentinel-auto
         - fast-chat
         - smart-chat
+        - private-chat
       max_requests: 10000
       max_tokens: 5000000
       max_budget: 50.0
@@ -70,3 +90,27 @@ gateway:
       rpm: 1000
       tpm: 1000000
       max_parallel_requests: 250
+    - name: openai-smart
+      provider: openai
+      model_name: smart-chat
+      upstream_model: gpt-4o
+      upstream_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      private: false
+      priority: 20
+      weight: 1
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+      rpm: 1000
+      tpm: 1000000
+      max_parallel_requests: 150
+    - name: ollama-private
+      provider: ollama
+      model_name: private-chat
+      upstream_model: llama3.1
+      upstream_url: http://localhost:11434/v1
+      api_key_env: OLLAMA_API_KEY
+      private: true
+      priority: 5
+      weight: 1
+      max_parallel_requests: 25

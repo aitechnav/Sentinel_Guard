@@ -9,8 +9,8 @@ gateway so prompts and model responses are scanned centrally.
 Build the default gateway image:
 
 ```bash
-docker build -t registry.example.com/sentinelguard-gateway:0.0.9 .
-docker push registry.example.com/sentinelguard-gateway:0.0.9
+docker build -t registry.example.com/sentinelguard-gateway:0.0.11 .
+docker push registry.example.com/sentinelguard-gateway:0.0.11
 ```
 
 For local Hugging Face model-backed detection inside the gateway image:
@@ -18,8 +18,8 @@ For local Hugging Face model-backed detection inside the gateway image:
 ```bash
 docker build \
   --build-arg SENTINELGUARD_EXTRAS=gateway,monitoring,models \
-  -t registry.example.com/sentinelguard-gateway:0.0.9-models .
-docker push registry.example.com/sentinelguard-gateway:0.0.9-models
+  -t registry.example.com/sentinelguard-gateway:0.0.11-models .
+docker push registry.example.com/sentinelguard-gateway:0.0.11-models
 ```
 
 Update `deployment.yaml` to use your pushed image.
@@ -117,6 +117,13 @@ kubectl apply -f examples/kubernetes/ingress.example.yaml
 
 Keep this endpoint private to your network, VPN, or internal platform controls.
 The gateway may hold upstream LLM API keys.
+
+## Dashboard state note
+
+The starter manifest runs one replica because the built-in dashboard token store
+uses the SQLite state file mounted at `/data`. For multi-replica production,
+prefer config-managed virtual keys today, or move dashboard/client state to a
+shared backend before increasing replicas.
 
 ## Model cache note
 

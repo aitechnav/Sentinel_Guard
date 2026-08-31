@@ -114,6 +114,7 @@ After the gateway starts, configure your app or IDE to use SentinelGuard:
 ```text
 Base URL: http://localhost:8080/v1
 API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
+Model:    sentinel-auto
 ```
 
 For OpenAI SDK-based apps, that usually means:

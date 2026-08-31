@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: sentinelguard-gateway
     app.kubernetes.io/component: llm-gateway
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: sentinelguard-gateway
@@ -105,6 +105,30 @@ spec:
                   name: sentinelguard-gateway-secrets
                   key: SENTINELGUARD_AUDIT_SALT
                   optional: true
+            - name: SENTINELGUARD_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: SENTINELGUARD_ADMIN_USERNAME
+                  optional: true
+            - name: SENTINELGUARD_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: SENTINELGUARD_ADMIN_PASSWORD
+                  optional: true
+            - name: SENTINELGUARD_VIEWER_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: SENTINELGUARD_VIEWER_USERNAME
+                  optional: true
+            - name: SENTINELGUARD_VIEWER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelguard-gateway-secrets
+                  key: SENTINELGUARD_VIEWER_PASSWORD
+                  optional: true
           readinessProbe:
             httpGet:
               path: /gateway/v1/health
@@ -137,9 +161,14 @@ spec:
               readOnly: true
             - name: huggingface-cache
               mountPath: /root/.cache/huggingface
+            - name: gateway-data
+              mountPath: /data
       volumes:
         - name: gateway-config
           configMap:
             name: sentinelguard-gateway-config
         - name: huggingface-cache
           emptyDir: {}
+        - name: gateway-data
+          persistentVolumeClaim:
+            claimName: sentinelguard-gateway-data

@@ -111,9 +111,9 @@ sentinelguard gateway \
       <article class="sg-card">
         <h3>Route across providers</h3>
         <p>
-          Use friendly model names, route traffic across OpenAI-compatible
-          providers, fail over when one provider is unavailable, and keep
-          private routes available for sensitive traffic.
+          Use friendly model names, automatic complexity routing, cost-aware
+          provider routing, failover when one provider is unavailable, and
+          private routes for sensitive traffic.
         </p>
       </article>
       <article class="sg-card">

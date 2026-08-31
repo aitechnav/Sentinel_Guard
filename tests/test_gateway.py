@@ -6,7 +6,7 @@ import pytest
 
 from sentinelguard.core.scanner import AggregatedResult, RiskLevel, ScanResult
 from sentinelguard.core.config import GuardConfig
-from sentinelguard.gateway.config import GatewayConfig, ProviderConfig
+from sentinelguard.gateway.config import ComplexityRouterConfig, GatewayConfig, ProviderConfig
 from sentinelguard.gateway.operations import (
     ChatUsage,
     GatewayClient,
@@ -17,6 +17,7 @@ from sentinelguard.gateway.operations import (
     authenticate_gateway_request,
     check_gateway_access,
     extract_chat_usage,
+    gateway_usage_store,
 )
 from sentinelguard.gateway.policy import PolicyAction, evaluate_prompt_policy
 from sentinelguard.gateway.providers import (
@@ -42,6 +43,7 @@ from sentinelguard.gateway.providers import (
     _openai_to_anthropic_payload,
     _openai_to_gemini_payload,
 )
+from sentinelguard.gateway.routing import resolve_complexity_route, score_prompt_complexity
 from sentinelguard.gateway.server import _extract_passthrough_text, _is_authorized
 from sentinelguard.gateway.server import create_gateway_app
 
@@ -58,8 +60,13 @@ class TestGatewayConfig:
         assert config.state_backend == "memory"
         assert config.cache_backend == "memory"
         assert config.routing_strategy == "priority"
+        assert config.complexity_router.enabled is False
         assert config.health_check_enabled is True
         assert config.metrics_enabled is True
+        assert config.admin_ui_enabled is True
+        assert config.admin_auth_enabled is True
+        assert config.admin_session_ttl_seconds == 28800
+        assert config.admin_password_env == "SENTINELGUARD_ADMIN_PASSWORD"
         assert config.audit_enabled is True
         assert config.audit_hash_salt_env == "SENTINELGUARD_AUDIT_SALT"
 
@@ -127,6 +134,15 @@ class TestGatewayConfig:
                     "state_path": "/tmp/sentinelguard-test.sqlite3",
                     "cache_backend": "sqlite",
                     "routing_strategy": "cost-based-routing",
+                    "complexity_router": {
+                        "enabled": True,
+                        "strategy": "rule-based",
+                        "auto_model_names": ["sentinel-auto"],
+                        "simple_model": "fast-chat",
+                        "complex_model": "smart-chat",
+                        "private_model": "private-chat",
+                        "complexity_threshold": 0.7,
+                    },
                     "health_check_enabled": False,
                     "providers": [
                         {
@@ -159,12 +175,19 @@ class TestGatewayConfig:
         assert config.state_backend == "sqlite"
         assert config.cache_backend == "sqlite"
         assert config.routing_strategy == "cost-based-routing"
+        assert config.complexity_router.enabled is True
+        assert config.complexity_router.auto_model_names == ["sentinel-auto"]
+        assert config.complexity_router.simple_model == "fast-chat"
+        assert config.complexity_router.complex_model == "smart-chat"
+        assert config.complexity_router.private_model == "private-chat"
+        assert config.complexity_router.complexity_threshold == 0.7
         assert config.health_check_enabled is False
         assert config.providers[0].model_name == "fast-chat"
         assert config.providers[0].upstream_model == "gpt-4o-mini"
         assert config.providers[0].max_parallel_requests == 5
         assert config.virtual_keys[0].allowed_models == ["fast-chat"]
         assert config.virtual_keys[0].budget_reset == "daily"
+        assert config.to_dict()["complexity_router"]["enabled"] is True
         assert config.to_dict()["virtual_keys"][0]["key"] == "<configured>"
 
     def test_provider_defaults_are_effective_without_overwriting_config(self):
@@ -348,6 +371,194 @@ class TestGatewayStableManagementApi:
         over_budget = check_gateway_access(client, {"model": "fast-chat"}, store)
         assert not over_budget.allowed
         assert over_budget.status_code == 429
+
+    def test_chat_completion_allows_auto_model_after_resolving_route(self, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        forwarded_payloads = []
+
+        async def fake_forward(payload, headers, config):
+            forwarded_payloads.append(dict(payload))
+            return 200, {
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        monkeypatch.setattr(
+            "sentinelguard.gateway.providers._forward_chat_completion_single",
+            fake_forward,
+        )
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_minimal(),
+            gateway_config=GatewayConfig.from_dict(
+                {
+                    "complexity_router": {
+                        "enabled": True,
+                        "auto_model_names": ["sentinel-auto"],
+                        "simple_model": "fast-chat",
+                        "complex_model": "smart-chat",
+                    },
+                    "virtual_keys": [
+                        {
+                            "name": "team-a",
+                            "key": "sg-team-a",
+                            "allowed_models": ["smart-chat"],
+                        }
+                    ],
+                    "providers": [
+                        {
+                            "name": "fast",
+                            "provider": "openai",
+                            "model_name": "fast-chat",
+                            "upstream_model": "cheap-model",
+                        },
+                        {
+                            "name": "smart",
+                            "provider": "openai",
+                            "model_name": "smart-chat",
+                            "upstream_model": "strong-model",
+                        },
+                    ],
+                }
+            ),
+        )
+        client = fastapi_testclient.TestClient(app)
+        complex_text = (
+            "Please design an architecture, threat model, benchmark plan, "
+            "migration plan, and security review for a Kubernetes LLM gateway. "
+            + "Include detailed tradeoffs. " * 80
+        )
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer sg-team-a"},
+            json={
+                "model": "sentinel-auto",
+                "messages": [{"role": "user", "content": complex_text}],
+                "max_tokens": 2000,
+            },
+        )
+
+        assert response.status_code == 200
+        assert forwarded_payloads[0]["model"] == "strong-model"
+
+
+class TestGatewayAdminDashboard:
+    def test_admin_can_create_client_token_and_client_can_rotate_it(self, tmp_path, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        monkeypatch.setenv("SENTINELGUARD_ADMIN_PASSWORD", "admin-pass")
+        monkeypatch.setenv("SENTINELGUARD_VIEWER_PASSWORD", "viewer-pass")
+        config = GatewayConfig(
+            state_backend="sqlite",
+            state_path=str(tmp_path / "gateway.sqlite3"),
+            providers=[ProviderConfig(name="mock", provider="openai", model_name="fast-chat")],
+        )
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_minimal(),
+            gateway_config=config,
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        assert client.get("/admin/api/summary").status_code == 401
+        assert client.post(
+            "/admin/api/login",
+            json={"username": "admin", "password": "wrong"},
+        ).status_code == 401
+
+        login = client.post(
+            "/admin/api/login",
+            json={"username": "admin", "password": "admin-pass"},
+        )
+        assert login.status_code == 200
+        assert login.json()["user"]["role"] == "admin"
+
+        created = client.post(
+            "/admin/api/clients",
+            json={
+                "name": "chatbot-prod",
+                "tenant_id": "tenant-a",
+                "team_id": "platform",
+                "allowed_models": "fast-chat",
+            },
+        )
+        assert created.status_code == 201
+        created_body = created.json()
+        raw_token = created_body["token"]
+        client_id = created_body["client"]["id"]
+        assert raw_token.startswith("sgw_")
+        assert raw_token.startswith(created_body["client"]["token_prefix"].split("...")[0])
+
+        auth = authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config)
+        assert auth.allowed
+        assert auth.client is not None
+        assert auth.client.name == "chatbot-prod"
+        assert auth.client.team_id == "platform"
+        assert auth.client.allowed_models == ("fast-chat",)
+
+        gateway_usage_store(config).record(
+            auth.client,
+            model="fast-chat",
+            provider="mock",
+            usage=ChatUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5, cost=0.01),
+        )
+        usage = client.get(
+            "/gateway/v1/usage",
+            headers={"authorization": f"Bearer {raw_token}"},
+        ).json()
+        assert usage["usage"]["requests"] == 1
+        assert usage["usage"]["providers"] == {"mock": 1}
+
+        summary = client.get("/admin/api/summary").json()
+        managed = next(item for item in summary["clients"] if item["id"] == client_id)
+        assert managed["usage"]["requests"] == 1
+
+        rotated = client.post(f"/admin/api/clients/{client_id}/rotate")
+        assert rotated.status_code == 200
+        new_token = rotated.json()["token"]
+        assert new_token != raw_token
+        assert not authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config).allowed
+        new_auth = authenticate_gateway_request({"authorization": f"Bearer {new_token}"}, config)
+        assert new_auth.allowed
+        assert new_auth.client is not None
+        assert new_auth.client.key_id == client_id
+        assert client.get(
+            "/gateway/v1/usage",
+            headers={"authorization": f"Bearer {new_token}"},
+        ).json()["usage"]["requests"] == 1
+
+        client_rotated = client.post(
+            "/gateway/v1/client/token/rotate",
+            headers={"authorization": f"Bearer {new_token}"},
+        )
+        assert client_rotated.status_code == 200
+        newest_token = client_rotated.json()["token"]
+        assert newest_token != new_token
+        assert authenticate_gateway_request({"authorization": f"Bearer {newest_token}"}, config).allowed
+
+    def test_viewer_can_read_but_cannot_create_client_token(self, tmp_path, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        monkeypatch.setenv("SENTINELGUARD_ADMIN_PASSWORD", "admin-pass")
+        monkeypatch.setenv("SENTINELGUARD_VIEWER_PASSWORD", "viewer-pass")
+        config = GatewayConfig(
+            state_backend="sqlite",
+            state_path=str(tmp_path / "gateway.sqlite3"),
+        )
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_minimal(),
+            gateway_config=config,
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        login = client.post(
+            "/admin/api/login",
+            json={"username": "viewer", "password": "viewer-pass"},
+        )
+        assert login.status_code == 200
+        assert login.json()["user"]["role"] == "viewer"
+        assert client.get("/admin/api/summary").status_code == 200
+        assert client.post(
+            "/admin/api/clients",
+            json={"name": "should-not-create"},
+        ).status_code == 403
 
 
 class TestGatewayPolicy:
@@ -566,6 +777,117 @@ class TestGatewayProviders:
             "openai-fast",
             "ollama-fast",
         }
+
+    def test_available_gateway_models_includes_auto_route_when_enabled(self):
+        config = GatewayConfig(
+            complexity_router=ComplexityRouterConfig(
+                enabled=True,
+                auto_model_names=["sentinel-auto"],
+                simple_model="fast-chat",
+                complex_model="smart-chat",
+            ),
+            providers=[
+                ProviderConfig(
+                    name="openai-fast",
+                    provider="openai",
+                    model_name="fast-chat",
+                    upstream_model="gpt-4o-mini",
+                )
+            ],
+        )
+
+        models = available_gateway_models(config)
+
+        auto_model = next(model for model in models if model["id"] == "sentinel-auto")
+        assert auto_model["routing"]["type"] == "complexity"
+        assert auto_model["routing"]["simple_model"] == "fast-chat"
+        assert auto_model["routing"]["complex_model"] == "smart-chat"
+
+    def test_rule_based_complexity_router_routes_auto_model(self):
+        config = GatewayConfig(
+            complexity_router=ComplexityRouterConfig(
+                enabled=True,
+                auto_model_names=["sentinel-auto"],
+                simple_model="fast-chat",
+                complex_model="smart-chat",
+            )
+        )
+
+        simple = resolve_complexity_route(
+            {"model": "sentinel-auto", "messages": [{"role": "user", "content": "hi"}]},
+            "hi",
+            config,
+        )
+        complex_text = (
+            "Please design an architecture, threat model, benchmark plan, "
+            "migration plan, and security review for a Kubernetes LLM gateway. "
+            + "Include detailed tradeoffs. " * 80
+        )
+        complex_route = resolve_complexity_route(
+            {
+                "model": "sentinel-auto",
+                "messages": [{"role": "user", "content": complex_text}],
+                "max_tokens": 2000,
+            },
+            complex_text,
+            config,
+        )
+
+        assert simple.model == "fast-chat"
+        assert simple.route_type == "simple"
+        assert complex_route.model == "smart-chat"
+        assert complex_route.route_type == "complex"
+
+    def test_rule_based_router_preserves_explicit_model_by_default(self):
+        config = GatewayConfig(
+            complexity_router=ComplexityRouterConfig(
+                enabled=True,
+                simple_model="fast-chat",
+                complex_model="smart-chat",
+            )
+        )
+
+        decision = resolve_complexity_route(
+            {"model": "fast-chat"},
+            "Please design a very complex architecture",
+            config,
+        )
+
+        assert decision.model == "fast-chat"
+        assert decision.route_type == "explicit"
+        assert not decision.applied
+
+    def test_rule_based_router_prefers_private_model_for_private_route_constraint(self):
+        config = GatewayConfig(
+            complexity_router=ComplexityRouterConfig(
+                enabled=True,
+                auto_model_names=["sentinel-auto"],
+                simple_model="fast-chat",
+                complex_model="smart-chat",
+                private_model="private-chat",
+            )
+        )
+
+        decision = resolve_complexity_route(
+            {"model": "sentinel-auto"},
+            "Contact jane@example.com",
+            config,
+            route_constraint="private",
+        )
+
+        assert decision.model == "private-chat"
+        assert decision.route_type == "private"
+        assert decision.applied
+
+    def test_prompt_complexity_score_uses_deterministic_signals(self):
+        score, reasons = score_prompt_complexity(
+            {"messages": [{"role": "user", "content": "debug"}], "tools": [{"type": "function"}]},
+            "Please debug this ```python\nraise ValueError('x')\n``` and explain why it fails.",
+        )
+
+        assert score >= 0.4
+        assert "code_or_data_context" in reasons
+        assert "tool_calling_request" in reasons
 
     def test_cost_based_routing_prefers_lower_configured_cost(self):
         config = GatewayConfig(

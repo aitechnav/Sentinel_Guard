@@ -98,6 +98,52 @@ class VirtualKeyConfig:
 
 
 @dataclass
+class ComplexityRouterConfig:
+    """Prompt-aware gateway routing settings."""
+
+    enabled: bool = False
+    strategy: str = "rule-based"
+    auto_model_names: List[str] = field(
+        default_factory=lambda: ["auto", "sentinel-auto", "sentinelguard-auto"]
+    )
+    simple_model: Optional[str] = None
+    complex_model: Optional[str] = None
+    private_model: Optional[str] = None
+    default_model: Optional[str] = None
+    preserve_explicit_model: bool = True
+    complexity_threshold: float = 0.65
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> ComplexityRouterConfig:
+        known_fields = cls.__dataclass_fields__
+        values = {key: value for key, value in data.items() if key in known_fields}
+        auto_model_names = values.get("auto_model_names")
+        if isinstance(auto_model_names, str):
+            values["auto_model_names"] = [auto_model_names]
+        elif auto_model_names is None:
+            values.pop("auto_model_names", None)
+        return cls(**values)
+
+    def to_dict(self) -> Dict[str, Any]:
+        auto_model_names = (
+            [self.auto_model_names]
+            if isinstance(self.auto_model_names, str)
+            else list(self.auto_model_names)
+        )
+        return {
+            "enabled": self.enabled,
+            "strategy": self.strategy,
+            "auto_model_names": auto_model_names,
+            "simple_model": self.simple_model,
+            "complex_model": self.complex_model,
+            "private_model": self.private_model,
+            "default_model": self.default_model,
+            "preserve_explicit_model": self.preserve_explicit_model,
+            "complexity_threshold": self.complexity_threshold,
+        }
+
+
+@dataclass
 class GatewayConfig:
     """Settings for OpenAI-compatible LLM gateway mode."""
 
@@ -119,6 +165,7 @@ class GatewayConfig:
     route_pii_to_private_provider: bool = False
     fallback_enabled: bool = True
     routing_strategy: str = "priority"
+    complexity_router: ComplexityRouterConfig = field(default_factory=ComplexityRouterConfig)
     failover_status_codes: List[int] = field(
         default_factory=lambda: [408, 409, 425, 429, 500, 502, 503, 504]
     )
@@ -142,6 +189,13 @@ class GatewayConfig:
     realtime_gateway_enabled: bool = False
     realtime_upstream_url: Optional[str] = None
     admin_ui_enabled: bool = True
+    admin_auth_enabled: bool = True
+    admin_state_path: Optional[str] = None
+    admin_session_ttl_seconds: int = 28800
+    admin_username_env: str = "SENTINELGUARD_ADMIN_USERNAME"
+    admin_password_env: str = "SENTINELGUARD_ADMIN_PASSWORD"
+    admin_viewer_username_env: str = "SENTINELGUARD_VIEWER_USERNAME"
+    admin_viewer_password_env: str = "SENTINELGUARD_VIEWER_PASSWORD"
     otel_enabled: bool = False
     langfuse_enabled: bool = False
     metrics_enabled: bool = True
@@ -171,10 +225,17 @@ class GatewayConfig:
             for virtual_key in gateway_data.pop("virtual_keys", []) or []
             if isinstance(virtual_key, dict)
         ]
+        complexity_router_data = gateway_data.pop("complexity_router", {}) or {}
+        complexity_router = (
+            ComplexityRouterConfig.from_dict(complexity_router_data)
+            if isinstance(complexity_router_data, dict)
+            else ComplexityRouterConfig()
+        )
         known_fields = cls.__dataclass_fields__
         return cls(
             providers=providers,
             virtual_keys=virtual_keys,
+            complexity_router=complexity_router,
             **{key: value for key, value in gateway_data.items() if key in known_fields},
         )
 
@@ -198,6 +259,7 @@ class GatewayConfig:
             "route_pii_to_private_provider": self.route_pii_to_private_provider,
             "fallback_enabled": self.fallback_enabled,
             "routing_strategy": self.routing_strategy,
+            "complexity_router": self.complexity_router.to_dict(),
             "failover_status_codes": list(self.failover_status_codes),
             "health_check_enabled": self.health_check_enabled,
             "unhealthy_ttl_seconds": self.unhealthy_ttl_seconds,
@@ -219,6 +281,13 @@ class GatewayConfig:
             "realtime_gateway_enabled": self.realtime_gateway_enabled,
             "realtime_upstream_url": self.realtime_upstream_url,
             "admin_ui_enabled": self.admin_ui_enabled,
+            "admin_auth_enabled": self.admin_auth_enabled,
+            "admin_state_path": self.admin_state_path,
+            "admin_session_ttl_seconds": self.admin_session_ttl_seconds,
+            "admin_username_env": self.admin_username_env,
+            "admin_password_env": self.admin_password_env,
+            "admin_viewer_username_env": self.admin_viewer_username_env,
+            "admin_viewer_password_env": self.admin_viewer_password_env,
             "otel_enabled": self.otel_enabled,
             "langfuse_enabled": self.langfuse_enabled,
             "metrics_enabled": self.metrics_enabled,

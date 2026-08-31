@@ -97,7 +97,62 @@ For real use, prefer environment variables, `.env` files that are ignored by
 Git, Kubernetes Secrets, or a secret manager. Do not commit real LLM API keys or
 gateway tokens into `sentinelguard-gateway.yaml`.
 
+## Admin Dashboard And Per-Client Tokens
+
+SentinelGuard includes its own gateway dashboard at:
+
+```text
+http://localhost:8080/admin
+```
+
+The dashboard has two roles:
+
+| Role | Access |
+| --- | --- |
+| `admin` | Read usage, create client tokens, rotate tokens, and enable or disable managed clients |
+| `viewer` | Read usage, provider health, and client status only |
+
+Set dashboard credentials with environment variables:
+
+```bash
+export SENTINELGUARD_ADMIN_USERNAME="admin"
+export SENTINELGUARD_ADMIN_PASSWORD="use-a-strong-password"
+export SENTINELGUARD_VIEWER_USERNAME="viewer"
+export SENTINELGUARD_VIEWER_PASSWORD="use-a-readonly-password"
+```
+
+If these password variables are not set, SentinelGuard creates local fallback
+users for development: `admin` / `sentinelguard` and `viewer` /
+`sentinelguard-readonly`. The dashboard shows a warning until real passwords
+are configured.
+
+When an admin creates or rotates a client token, SentinelGuard displays the raw
+`sgw_...` value once. After that, it stores only a hash and a masked prefix.
+The generated token is what a client uses in its API-key field:
+
+```text
+Base URL: http://localhost:8080/v1
+API key:  generated client token from the dashboard
+Model:    sentinel-auto
+```
+
+A dashboard-managed client can also rotate its own token while it still has a
+valid current token:
+
+```bash
+curl -X POST http://localhost:8080/gateway/v1/client/token/rotate \
+  -H "Authorization: Bearer $SENTINELGUARD_CLIENT_TOKEN"
+```
+
+If a client loses its token, an admin should rotate that client from the
+dashboard and update the application, IDE, Kubernetes Secret, ECS task secret,
+or VM environment variable that uses it.
+
 ## Lost Or Rotated Gateway Token
+
+This section applies to CLI-generated or config-managed gateway tokens. For
+dashboard-managed clients, rotate the client from `/admin` and update only that
+client's app or service secret.
 
 `sentinelguard token` is stateless. It does not look up, refresh, or remember
 old tokens. Every time you run it, it prints a new random token.
@@ -161,6 +216,77 @@ sentinelguard gateway --provider gemini --port 8080
 export MOONSHOT_API_KEY="..."
 sentinelguard gateway --provider kimi --port 8080
 ```
+
+## Automatic Model Routing
+
+SentinelGuard supports gateway-side routing in three practical layers:
+
+| Routing type | Status | How to use it |
+| --- | --- | --- |
+| Rule-based routing | Supported | Use `complexity_router` with `sentinel-auto` to send simple prompts to a lower-cost route and complex prompts to a stronger route. |
+| Cost-aware routing | Supported | Use `routing_strategy: cost-based-routing` inside a provider pool serving the same model alias. |
+| LLM-based routing | Not enabled by default | Keep this as an optional future mode when you want a separate router model; rule-based routing is faster and safer for the default gateway path. |
+
+The generated gateway config exposes these friendly model names:
+
+- `sentinel-auto`: SentinelGuard chooses the route.
+- `fast-chat`: lower-cost route for simple prompts.
+- `smart-chat`: stronger route for complex prompts.
+- `private-chat`: local/private route for sensitive traffic when private routing is enabled.
+
+Example:
+
+```yaml
+gateway:
+  route_pii_to_private_provider: true
+  routing_strategy: cost-based-routing
+  complexity_router:
+    enabled: true
+    strategy: rule-based
+    auto_model_names:
+      - sentinel-auto
+      - auto
+    simple_model: fast-chat
+    complex_model: smart-chat
+    private_model: private-chat
+    preserve_explicit_model: true
+    complexity_threshold: 0.65
+
+  providers:
+    - name: openai-fast
+      provider: openai
+      model_name: fast-chat
+      upstream_model: gpt-4o-mini
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+
+    - name: openai-smart
+      provider: openai
+      model_name: smart-chat
+      upstream_model: gpt-4o
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+
+    - name: ollama-private
+      provider: ollama
+      model_name: private-chat
+      upstream_model: llama3.1
+      private: true
+```
+
+Apps and IDEs can then use:
+
+```text
+Base URL: http://localhost:8080/v1
+API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
+Model:    sentinel-auto
+```
+
+With `preserve_explicit_model: true`, SentinelGuard only auto-routes requests
+whose model is one of `auto_model_names`. If a client explicitly requests
+`fast-chat` or `smart-chat`, SentinelGuard keeps that route. Set
+`preserve_explicit_model: false` only when you want the gateway to override
+client-selected model names.
 
 ## Configure Apps And IDEs
 

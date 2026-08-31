@@ -129,6 +129,17 @@ def _gateway_config_yaml() -> str:
 
           fallback_enabled: true
           routing_strategy: priority
+          complexity_router:
+            enabled: true
+            strategy: rule-based
+            auto_model_names:
+              - sentinel-auto
+              - auto
+            simple_model: fast-chat
+            complex_model: smart-chat
+            private_model: private-chat
+            preserve_explicit_model: true
+            complexity_threshold: 0.65
           health_check_enabled: true
           unhealthy_ttl_seconds: 30
           failover_status_codes: [408, 409, 425, 429, 500, 502, 503, 504]
@@ -147,6 +158,13 @@ def _gateway_config_yaml() -> str:
           audit_enabled: true
           audit_hash_salt_env: SENTINELGUARD_AUDIT_SALT
           admin_ui_enabled: true
+          admin_auth_enabled: true
+          admin_state_path: ./.sentinelguard/gateway.sqlite3
+          admin_session_ttl_seconds: 28800
+          admin_username_env: SENTINELGUARD_ADMIN_USERNAME
+          admin_password_env: SENTINELGUARD_ADMIN_PASSWORD
+          admin_viewer_username_env: SENTINELGUARD_VIEWER_USERNAME
+          admin_viewer_password_env: SENTINELGUARD_VIEWER_PASSWORD
           otel_enabled: false
           langfuse_enabled: false
 
@@ -161,6 +179,7 @@ def _gateway_config_yaml() -> str:
             - name: local-dev
               key_env: SENTINELGUARD_GATEWAY_API_KEY
               allowed_models:
+                - sentinel-auto
                 - fast-chat
                 - smart-chat
                 - private-chat
@@ -182,12 +201,12 @@ def _gateway_config_yaml() -> str:
               output_cost_per_token: 0.0000006
               max_parallel_requests: 250
 
-            - name: anthropic-smart
-              provider: anthropic
+            - name: openai-smart
+              provider: openai
               model_name: smart-chat
-              upstream_model: claude-3-5-sonnet-latest
-              upstream_url: https://api.anthropic.com/v1
-              api_key_env: ANTHROPIC_API_KEY
+              upstream_model: gpt-4o
+              upstream_url: https://api.openai.com/v1
+              api_key_env: OPENAI_API_KEY
               priority: 20
               weight: 1
               input_cost_per_token: 0.000003
@@ -213,15 +232,21 @@ def _env_example() -> str:
         f"""\
         # Copy this file to .env for Docker Compose, or export these variables in your shell.
         # Never commit real provider keys.
-        # Generate local SentinelGuard tokens with:
+        # Generate local SentinelGuard tokens and dashboard passwords with:
         #   sentinelguard token
         #   sentinelguard token --prefix sgaudit
+        #   sentinelguard token --prefix sgadmin
+        #   sentinelguard token --prefix sgviewer
 
         SENTINELGUARD_VERSION={__version__}
         SENTINELGUARD_EXTRAS=gateway,monitoring
         SENTINELGUARD_IMAGE=sentinelguard-gateway:local
         SENTINELGUARD_GATEWAY_API_KEY=
         SENTINELGUARD_AUDIT_SALT=
+        SENTINELGUARD_ADMIN_USERNAME=admin
+        SENTINELGUARD_ADMIN_PASSWORD=
+        SENTINELGUARD_VIEWER_USERNAME=viewer
+        SENTINELGUARD_VIEWER_PASSWORD=
         SENTINELGUARD_GATEWAY_PORT=8080
 
         OPENAI_API_KEY=
@@ -243,6 +268,8 @@ def _env_example() -> str:
 def _env_file() -> str:
     gateway_token = generate_gateway_token()
     audit_salt = generate_gateway_token(prefix="sgaudit")
+    admin_password = generate_gateway_token(prefix="sgadmin")
+    viewer_password = generate_gateway_token(prefix="sgviewer")
     return dedent(
         f"""\
         # Local SentinelGuard gateway environment.
@@ -253,6 +280,10 @@ def _env_file() -> str:
         SENTINELGUARD_IMAGE=sentinelguard-gateway:local
         SENTINELGUARD_GATEWAY_API_KEY={gateway_token}
         SENTINELGUARD_AUDIT_SALT={audit_salt}
+        SENTINELGUARD_ADMIN_USERNAME=admin
+        SENTINELGUARD_ADMIN_PASSWORD={admin_password}
+        SENTINELGUARD_VIEWER_USERNAME=viewer
+        SENTINELGUARD_VIEWER_PASSWORD={viewer_password}
         SENTINELGUARD_GATEWAY_PORT=8080
 
         OPENAI_API_KEY=
@@ -328,6 +359,10 @@ def _docker_compose(docker_image: str) -> str:
               OLLAMA_API_KEY: ${{OLLAMA_API_KEY:-}}
               SENTINELGUARD_GATEWAY_API_KEY: ${{SENTINELGUARD_GATEWAY_API_KEY:-}}
               SENTINELGUARD_AUDIT_SALT: ${{SENTINELGUARD_AUDIT_SALT:-local-dev-audit-salt}}
+              SENTINELGUARD_ADMIN_USERNAME: ${{SENTINELGUARD_ADMIN_USERNAME:-admin}}
+              SENTINELGUARD_ADMIN_PASSWORD: ${{SENTINELGUARD_ADMIN_PASSWORD:-sentinelguard}}
+              SENTINELGUARD_VIEWER_USERNAME: ${{SENTINELGUARD_VIEWER_USERNAME:-viewer}}
+              SENTINELGUARD_VIEWER_PASSWORD: ${{SENTINELGUARD_VIEWER_PASSWORD:-sentinelguard-readonly}}
             volumes:
               - ./sentinelguard.yaml:/etc/sentinelguard/sentinelguard.yaml:ro
               - ./sentinelguard-gateway.yaml:/etc/sentinelguard/gateway.yaml:ro
@@ -420,8 +455,13 @@ def _readme(profile: str) -> str:
         ```text
         Base URL: http://localhost:8080/v1
         API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
-        Model:    fast-chat, smart-chat, or private-chat
+        Model:    sentinel-auto, fast-chat, smart-chat, or private-chat
         ```
+
+        Use `sentinel-auto` when you want SentinelGuard to route simple prompts
+        to `fast-chat`, complex prompts to `smart-chat`, and sensitive prompts
+        to `private-chat` when private routing is enabled. Use the explicit
+        model names when your app or IDE should choose the route directly.
 
         For OpenAI SDK-compatible app settings:
 
@@ -430,10 +470,11 @@ def _readme(profile: str) -> str:
         export OPENAI_API_KEY="$SENTINELGUARD_GATEWAY_API_KEY"
         ```
 
-        Use `fast-chat` for OpenAI, `smart-chat` for Anthropic, and
-        `private-chat` for local Ollama. SentinelGuard also supports Gemini,
-        Kimi/Moonshot, DeepSeek, Mistral, MiniMax, Hugging Face, and custom
-        OpenAI-compatible providers. Remove provider routes you do not use.
+        The starter config maps `fast-chat` and `smart-chat` to OpenAI, and
+        `private-chat` to local Ollama. SentinelGuard also supports Anthropic
+        Claude, Gemini, Kimi/Moonshot, DeepSeek, Mistral, MiniMax, Hugging
+        Face, and custom OpenAI-compatible providers. Remove or replace
+        provider routes you do not use.
 
         Useful checks:
 

@@ -12,6 +12,13 @@ from sentinelguard.audit import AuditContext, build_audit_context, log_scan_dete
 from sentinelguard.core.config import GuardConfig
 from sentinelguard.core.guard import SentinelGuard
 from sentinelguard.core.scanner import AggregatedResult
+from sentinelguard.gateway.admin import (
+    ADMIN_COOKIE_NAME,
+    ADMIN_ROLE,
+    AdminIdentity,
+    GatewayAdminStore,
+    gateway_admin_store,
+)
 from sentinelguard.gateway.config import GatewayConfig
 from sentinelguard.gateway.operations import (
     GatewayClient,
@@ -20,6 +27,7 @@ from sentinelguard.gateway.operations import (
     extract_chat_usage,
     gateway_response_cache,
     gateway_usage_store,
+    hash_secret,
     provider_for_result,
     virtual_key_summary,
 )
@@ -41,6 +49,11 @@ from sentinelguard.gateway.policy import (
     PolicyDecision,
     evaluate_output_policy,
     evaluate_prompt_policy,
+)
+from sentinelguard.gateway.routing import (
+    ComplexityRouteDecision,
+    apply_complexity_route,
+    resolve_complexity_route,
 )
 from sentinelguard.models import model_status
 from sentinelguard.monitoring import (
@@ -82,6 +95,7 @@ def create_gateway_app(
     guard = SentinelGuard(config=guard_config)
     usage_store = gateway_usage_store(config)
     response_cache = gateway_response_cache(config)
+    admin_store = gateway_admin_store(config) if config.admin_ui_enabled else None
 
     app = FastAPI(
         title="SentinelGuard LLM Gateway",
@@ -134,11 +148,178 @@ def create_gateway_app(
     async def gateway_contract():
         return _gateway_contract_payload(config)
 
-    if config.admin_ui_enabled:
+    if config.admin_ui_enabled and admin_store is not None:
 
         @app.get("/admin")
+        @app.get("/admin/login")
         async def admin():
             return Response(content=_admin_html(), media_type="text/html")
+
+        @app.post("/admin/api/login")
+        async def admin_login(request: Request):
+            payload = await _json_body(request)
+            identity = admin_store.verify_user(
+                str(payload.get("username") or ""),
+                str(payload.get("password") or ""),
+            )
+            if identity is None:
+                return _gateway_error_response(
+                    401,
+                    "sentinelguard_admin_login_failed",
+                    "Invalid SentinelGuard dashboard credentials",
+                )
+            session = admin_store.create_session(identity)
+            response = JSONResponse(
+                content={"authenticated": True, "user": _admin_identity_payload(identity)}
+            )
+            response.set_cookie(
+                key=ADMIN_COOKIE_NAME,
+                value=session,
+                max_age=max(300, int(config.admin_session_ttl_seconds or 28800)),
+                httponly=True,
+                samesite="lax",
+                path="/admin",
+            )
+            return response
+
+        @app.post("/admin/api/logout")
+        async def admin_logout(request: Request):
+            admin_store.delete_session(_admin_session_token(request))
+            response = JSONResponse(content={"ok": True})
+            response.delete_cookie(ADMIN_COOKIE_NAME, path="/admin")
+            return response
+
+        @app.get("/admin/api/me")
+        async def admin_me(request: Request):
+            identity = _require_admin_user(request, admin_store, config)
+            return {"authenticated": True, "user": _admin_identity_payload(identity)}
+
+        @app.get("/admin/api/summary")
+        async def admin_summary(request: Request):
+            identity = _require_admin_user(request, admin_store, config)
+            return _admin_summary_payload(config, admin_store, usage_store, identity)
+
+        @app.get("/admin/api/clients")
+        async def admin_clients(request: Request):
+            _require_admin_user(request, admin_store, config)
+            return {"clients": _dashboard_clients(config, admin_store, usage_store)}
+
+        @app.post("/admin/api/clients")
+        async def admin_create_client(request: Request):
+            _require_admin_user(request, admin_store, config, required_role=ADMIN_ROLE)
+            payload = await _json_body(request)
+            try:
+                client, token = admin_store.create_client(
+                    name=str(payload.get("name") or ""),
+                    tenant_id=_payload_text(payload, "tenant_id"),
+                    team_id=_payload_text(payload, "team_id"),
+                    user_id=_payload_text(payload, "user_id"),
+                    allowed_models=_payload_allowed_models(payload.get("allowed_models")),
+                    max_requests=_optional_int(payload.get("max_requests")),
+                    max_tokens=_optional_int(payload.get("max_tokens")),
+                    max_budget=_optional_float(payload.get("max_budget")),
+                    budget_reset=_payload_text(payload, "budget_reset"),
+                )
+            except ValueError as exc:
+                return _gateway_error_response(400, "sentinelguard_admin_bad_request", str(exc))
+            return JSONResponse(
+                status_code=201,
+                content={
+                    "client": _with_usage(client, usage_store),
+                    "token": token,
+                    "token_display": token,
+                    "message": "Copy this token now. SentinelGuard stores only its hash.",
+                },
+            )
+
+        @app.patch("/admin/api/clients/{client_id}")
+        async def admin_update_client(client_id: str, request: Request):
+            _require_admin_user(request, admin_store, config, required_role=ADMIN_ROLE)
+            if not client_id.startswith("sgc_"):
+                return _gateway_error_response(
+                    400,
+                    "sentinelguard_config_managed_client",
+                    "Config-managed gateway keys cannot be changed from the dashboard",
+                )
+            payload = await _json_body(request)
+            try:
+                client = admin_store.update_client(
+                    client_id,
+                    enabled=_optional_bool(payload.get("enabled")),
+                    tenant_id=_payload_text(payload, "tenant_id"),
+                    team_id=_payload_text(payload, "team_id"),
+                    user_id=_payload_text(payload, "user_id"),
+                    allowed_models=(
+                        _payload_allowed_models(payload.get("allowed_models"))
+                        if "allowed_models" in payload
+                        else None
+                    ),
+                    max_requests=_optional_int(payload.get("max_requests")),
+                    max_tokens=_optional_int(payload.get("max_tokens")),
+                    max_budget=_optional_float(payload.get("max_budget")),
+                    budget_reset=_payload_text(payload, "budget_reset"),
+                )
+            except KeyError:
+                return _gateway_error_response(
+                    404,
+                    "sentinelguard_gateway_client_not_found",
+                    "Gateway client not found",
+                )
+            return {"client": _with_usage(client, usage_store)}
+
+        @app.post("/admin/api/clients/{client_id}/rotate")
+        async def admin_rotate_client(client_id: str, request: Request):
+            _require_admin_user(request, admin_store, config, required_role=ADMIN_ROLE)
+            if not client_id.startswith("sgc_"):
+                return _gateway_error_response(
+                    400,
+                    "sentinelguard_config_managed_client",
+                    "Config-managed gateway keys cannot be rotated from the dashboard",
+                )
+            try:
+                client, token = admin_store.rotate_client(client_id)
+            except KeyError:
+                return _gateway_error_response(
+                    404,
+                    "sentinelguard_gateway_client_not_found",
+                    "Gateway client not found",
+                )
+            return {
+                "client": _with_usage(client, usage_store),
+                "token": token,
+                "token_display": token,
+                "message": "Copy this token now. The previous token no longer works.",
+            }
+
+        @app.get("/admin/api/clients/{client_id}/usage")
+        async def admin_client_usage(client_id: str, request: Request):
+            _require_admin_user(request, admin_store, config)
+            return _client_usage_payload(client_id, config, admin_store, usage_store)
+
+        @app.post("/gateway/v1/client/token/rotate")
+        async def rotate_current_client_token(request: Request):
+            auth = authenticate_gateway_request(request.headers, config)
+            if not auth.allowed or auth.client is None:
+                return _gateway_error_response(auth.status_code, auth.error_type, auth.message)
+            if not auth.client.key_id.startswith("sgc_"):
+                return _gateway_error_response(
+                    400,
+                    "sentinelguard_config_managed_client",
+                    "Only dashboard-managed gateway clients can rotate their own token",
+                )
+            try:
+                client, token = admin_store.rotate_client(auth.client.key_id)
+            except KeyError:
+                return _gateway_error_response(
+                    404,
+                    "sentinelguard_gateway_client_not_found",
+                    "Gateway client not found",
+                )
+            return {
+                "client": _with_usage(client, usage_store),
+                "token": token,
+                "message": "Copy this token now. The previous token no longer works.",
+            }
 
     @app.api_route(
         "/mcp/{path:path}",
@@ -197,9 +378,6 @@ def create_gateway_app(
 
         payload = await request.json()
         _validate_payload(payload)
-        access = check_gateway_access(auth.client, payload, usage_store)
-        if not access.allowed:
-            return _gateway_error_response(access.status_code, access.error_type, access.message)
         audit_context = build_audit_context(
             request.headers,
             payload,
@@ -214,9 +392,15 @@ def create_gateway_app(
                 guard,
                 audit_context,
                 auth.client,
+                usage_store,
             )
 
         if not config.enabled:
+            access = check_gateway_access(auth.client, payload, usage_store)
+            if not access.allowed:
+                return _gateway_error_response(
+                    access.status_code, access.error_type, access.message
+                )
             forwarded = await forward_chat_completion_with_failover(
                 payload,
                 request.headers,
@@ -258,6 +442,17 @@ def create_gateway_app(
         upstream_payload = dict(payload)
         if config.sanitize and safe_prompt != prompt_text:
             upstream_payload["messages"] = replace_last_user_text(messages, safe_prompt)
+        upstream_payload, routing_decision = _route_upstream_payload(
+            upstream_payload,
+            safe_prompt,
+            prompt_decision,
+            config,
+        )
+        _emit_routing_decision(config, routing_decision, streaming=False)
+
+        access = check_gateway_access(auth.client, upstream_payload, usage_store)
+        if not access.allowed:
+            return _gateway_error_response(access.status_code, access.error_type, access.message)
 
         cached_body = response_cache.get(upstream_payload, config)
         if cached_body is not None:
@@ -340,6 +535,7 @@ async def _handle_streaming_chat(
     guard: SentinelGuard,
     audit_context: AuditContext,
     client: GatewayClient,
+    usage_store: Any,
 ) -> Any:
     if config.streaming_mode != "buffered":
         raise HTTPException(
@@ -351,6 +547,9 @@ async def _handle_streaming_chat(
     upstream_payload["stream"] = False
 
     if not config.enabled:
+        access = check_gateway_access(client, upstream_payload, usage_store)
+        if not access.allowed:
+            return _gateway_error_response(access.status_code, access.error_type, access.message)
         forwarded = await forward_chat_completion_with_failover(
             upstream_payload,
             headers,
@@ -392,6 +591,17 @@ async def _handle_streaming_chat(
     safe_prompt = prompt_decision.sanitized_text or prompt_text
     if config.sanitize and safe_prompt != prompt_text:
         upstream_payload["messages"] = replace_last_user_text(messages, safe_prompt)
+    upstream_payload, routing_decision = _route_upstream_payload(
+        upstream_payload,
+        safe_prompt,
+        prompt_decision,
+        config,
+    )
+    _emit_routing_decision(config, routing_decision, streaming=True)
+
+    access = check_gateway_access(client, upstream_payload, usage_store)
+    if not access.allowed:
+        return _gateway_error_response(access.status_code, access.error_type, access.message)
 
     forwarded = await forward_chat_completion_with_failover(
         upstream_payload,
@@ -548,6 +758,45 @@ async def _websocket_upstream_to_client(websocket: WebSocket, upstream: Any) -> 
             await websocket.send_text(str(message))
 
 
+def _route_upstream_payload(
+    payload: Mapping[str, Any],
+    prompt_text: str,
+    prompt_decision: PolicyDecision,
+    config: GatewayConfig,
+) -> tuple[dict[str, Any], ComplexityRouteDecision]:
+    routing_decision = resolve_complexity_route(
+        payload,
+        prompt_text,
+        config,
+        route_constraint=prompt_decision.route_constraint,
+        highest_risk=prompt_decision.highest_risk,
+    )
+    return apply_complexity_route(payload, routing_decision), routing_decision
+
+
+def _emit_routing_decision(
+    config: GatewayConfig,
+    decision: ComplexityRouteDecision,
+    *,
+    streaming: bool,
+) -> None:
+    if not config.complexity_router.enabled:
+        return
+    emit_gateway_event(
+        config,
+        "sentinelguard.gateway.routing",
+        {
+            "from_model": decision.original_model,
+            "to_model": decision.model or "",
+            "route_type": decision.route_type,
+            "applied": decision.applied,
+            "score": round(decision.score, 3),
+            "reasons": list(decision.reasons),
+            "streaming": streaming,
+        },
+    )
+
+
 def _record_gateway_usage(
     client: GatewayClient,
     payload: Mapping[str, Any],
@@ -612,10 +861,11 @@ def _health_payload(config: GatewayConfig, guard: SentinelGuard) -> dict[str, An
         "cache_backend": config.cache_backend,
         "cache_enabled": config.cache_enabled,
         "routing_strategy": config.routing_strategy,
+        "complexity_router": config.complexity_router.to_dict(),
         "health_check_enabled": config.health_check_enabled,
         "metrics_enabled": config.metrics_enabled,
         "audit_enabled": config.audit_enabled,
-        "client_auth_enabled": bool(_client_api_key(config) or config.virtual_keys),
+        "client_auth_enabled": _client_auth_enabled(config),
         "virtual_keys": virtual_key_summary(config),
         "prometheus_available": prometheus_available(),
         "model_status": model_status(),
@@ -635,6 +885,8 @@ def _routes_payload(config: GatewayConfig) -> dict[str, Any]:
         "stable_management_endpoints": endpoints["stable_management"],
         "openai_compatible_endpoints": endpoints["openai_compatible"],
         "compatibility_endpoints": endpoints["compatibility"],
+        "routing_strategy": config.routing_strategy,
+        "complexity_router": config.complexity_router.to_dict(),
         "models": available_gateway_models(config),
         "providers": [
             {
@@ -703,11 +955,12 @@ def _gateway_contract_payload(config: GatewayConfig) -> dict[str, Any]:
             "usage": "/gateway/v1/usage",
             "provider_health": "/gateway/v1/provider-health",
             "contract": "/gateway/v1/contract",
+            "client_token_rotate": "/gateway/v1/client/token/rotate",
         },
         "openai_compatible_endpoints": endpoints["openai_compatible"],
         "compatibility_endpoints": endpoints["compatibility"],
         "auth": {
-            "client_auth_enabled": bool(_client_api_key(config) or config.virtual_keys),
+            "client_auth_enabled": _client_auth_enabled(config),
             "headers": ["Authorization: Bearer <token>", "X-API-Key", "X-SentinelGuard-API-Key"],
             "usage_requires_auth": True,
         },
@@ -715,6 +968,10 @@ def _gateway_contract_payload(config: GatewayConfig) -> dict[str, Any]:
             "supported": True,
             "mode": config.streaming_mode,
             "safe_default": "buffered",
+        },
+        "routing": {
+            "provider_strategy": config.routing_strategy,
+            "complexity_router": config.complexity_router.to_dict(),
         },
     }
 
@@ -729,6 +986,7 @@ def _gateway_endpoints(config: GatewayConfig) -> dict[str, list[str]]:
         "/gateway/v1/models",
         "/gateway/v1/usage",
         "/gateway/v1/provider-health",
+        "/gateway/v1/client/token/rotate",
     ]
     compatibility = [
         "/models",
@@ -740,7 +998,7 @@ def _gateway_endpoints(config: GatewayConfig) -> dict[str, list[str]]:
     ]
     optional = []
     if config.admin_ui_enabled:
-        optional.append("/admin")
+        optional.extend(["/admin", "/admin/api/*"])
     if config.mcp_gateway_enabled:
         optional.append("/mcp/{path}")
     if config.a2a_gateway_enabled:
@@ -759,42 +1017,694 @@ def _gateway_endpoints(config: GatewayConfig) -> dict[str, list[str]]:
     }
 
 
+
 def _admin_html() -> str:
     return """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SentinelGuard Gateway</title>
+  <title>SentinelGuard Gateway Admin</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #17202a; }
-    main { max-width: 920px; margin: 0 auto; }
-    h1 { font-size: 28px; margin-bottom: 8px; }
-    p { color: #4b5563; }
-    section { border: 1px solid #d6dde6; border-radius: 8px; padding: 18px; margin-top: 18px; }
-    a { color: #0f5db8; text-decoration: none; font-weight: 600; }
-    code { background: #eef2f7; padding: 2px 6px; border-radius: 4px; }
-    ul { line-height: 1.8; }
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --line: #d8e0ea;
+      --text: #17202a;
+      --muted: #5d6b7c;
+      --accent: #145ca8;
+      --accent-dark: #0e457e;
+      --danger: #b42318;
+      --ok: #067647;
+      --warn: #b54708;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 64px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    main { width: min(1180px, calc(100vw - 32px)); margin: 24px auto 40px; }
+    h1 { font-size: 22px; margin: 0; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+    p { color: var(--muted); margin: 6px 0 0; }
+    button, input, select {
+      font: inherit;
+    }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 12px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover { background: var(--accent-dark); }
+    button.danger { color: var(--danger); border-color: #f2b8b5; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    input, select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: #fff;
+      color: var(--text);
+    }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+    th { color: var(--muted); font-weight: 700; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .stack { display: grid; gap: 16px; }
+    .topbar { display: flex; gap: 10px; align-items: center; }
+    .grid { display: grid; gap: 16px; }
+    .grid.stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid.two { grid-template-columns: minmax(280px, 380px) 1fr; align-items: start; }
+    .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .stat strong { display: block; font-size: 24px; line-height: 1.2; }
+    .muted { color: var(--muted); }
+    .pill { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; font-size: 12px; color: var(--muted); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .danger-text { color: var(--danger); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .hidden { display: none !important; }
+    .token-box {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      margin-top: 12px;
+      border: 1px solid #abd3ff;
+      border-radius: 8px;
+      padding: 12px;
+      background: #f0f7ff;
+    }
+    .token-box code { overflow-wrap: anywhere; font-size: 13px; }
+    .notice { border-left: 4px solid var(--warn); padding: 10px 12px; background: #fff8ed; color: #663c00; border-radius: 6px; }
+    .login { max-width: 420px; margin: 80px auto; }
+    .login .panel { padding: 24px; }
+    .error { color: var(--danger); min-height: 20px; }
+    @media (max-width: 860px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .grid.stats, .grid.two, .field-grid { grid-template-columns: 1fr; }
+      main { width: min(100vw - 20px, 1180px); }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>SentinelGuard Gateway</h1>
-    <p>Security enforcement, model routing, usage tracking, and operational checks.</p>
-    <section>
-      <h2>Operations</h2>
-      <ul>
-        <li><a href="/gateway/v1/routes">Routes and providers</a></li>
-        <li><a href="/gateway/v1/models">Models</a></li>
-        <li><a href="/gateway/v1/provider-health">Provider health</a></li>
-        <li><a href="/gateway/v1/health">Gateway health</a></li>
-        <li><a href="/gateway/v1/contract">Stable API contract</a></li>
-        <li><code>/gateway/v1/usage</code> requires your gateway API key.</li>
-      </ul>
-    </section>
-  </main>
+  <section id="loginView" class="login hidden">
+    <div class="panel stack">
+      <div>
+        <h1>SentinelGuard Gateway</h1>
+        <p>Sign in to manage clients and inspect gateway usage.</p>
+      </div>
+      <form id="loginForm" class="stack">
+        <label>Username <input id="username" autocomplete="username" value="admin"></label>
+        <label>Password <input id="password" type="password" autocomplete="current-password"></label>
+        <button class="primary" type="submit">Sign in</button>
+        <div id="loginError" class="error"></div>
+      </form>
+    </div>
+  </section>
+
+  <section id="appView" class="hidden">
+    <header>
+      <div>
+        <h1>SentinelGuard Gateway</h1>
+        <p>Client tokens, usage, providers, and operational status.</p>
+      </div>
+      <div class="topbar">
+        <span id="rolePill" class="pill"></span>
+        <button id="refreshBtn">Refresh</button>
+        <button id="logoutBtn">Logout</button>
+      </div>
+    </header>
+    <main class="stack">
+      <div id="warnings" class="stack"></div>
+      <section class="grid stats">
+        <div class="panel stat"><span class="muted">Clients</span><strong id="statClients">0</strong></div>
+        <div class="panel stat"><span class="muted">Requests</span><strong id="statRequests">0</strong></div>
+        <div class="panel stat"><span class="muted">Tokens</span><strong id="statTokens">0</strong></div>
+        <div class="panel stat"><span class="muted">Cost</span><strong id="statCost">$0.0000</strong></div>
+      </section>
+
+      <section class="grid two">
+        <div class="panel stack">
+          <div>
+            <h2>Client</h2>
+            <select id="clientSelect"></select>
+          </div>
+          <div id="selectedClient"></div>
+          <div class="actions admin-action">
+            <button id="rotateBtn">Rotate token</button>
+            <button id="toggleBtn">Enable / disable</button>
+          </div>
+          <div id="tokenBox" class="token-box hidden">
+            <code id="tokenValue"></code>
+            <button id="copyTokenBtn">Copy</button>
+          </div>
+        </div>
+
+        <div class="panel stack">
+          <h2>Selected Client Usage</h2>
+          <table>
+            <tbody id="usageTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel stack admin-action">
+        <h2>Create Client Token</h2>
+        <form id="createForm" class="stack">
+          <div class="field-grid">
+            <label>Client name <input id="newName" placeholder="chatbot-prod"></label>
+            <label>Allowed models <input id="newModels" value="*" placeholder="sentinel-auto, fast-chat"></label>
+            <label>Tenant <input id="newTenant" placeholder="tenant-a"></label>
+            <label>Team <input id="newTeam" placeholder="platform"></label>
+            <label>User owner <input id="newUser" placeholder="service-account"></label>
+            <label>Budget reset <select id="newBudgetReset"><option value="">All time</option><option>daily</option><option>monthly</option></select></label>
+          </div>
+          <button class="primary" type="submit">Generate token</button>
+        </form>
+      </section>
+
+      <section class="panel stack">
+        <h2>All Clients</h2>
+        <div style="overflow:auto">
+          <table>
+            <thead><tr><th>Name</th><th>Source</th><th>Status</th><th>Models</th><th>Requests</th><th>Last used</th></tr></thead>
+            <tbody id="clientsTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <h2>Provider Health</h2>
+        <div style="overflow:auto">
+          <table>
+            <thead><tr><th>Provider</th><th>Model</th><th>Status</th><th>Attempts</th><th>Successes</th><th>Failures</th></tr></thead>
+            <tbody id="providerTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </section>
+
+  <script>
+    const state = { user: null, clients: [], providers: [], selected: null };
+    const $ = (id) => document.getElementById(id);
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', ...(options.headers || {}) },
+        ...options,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = data?.error?.message || data?.detail || 'Request failed';
+        throw new Error(message);
+      }
+      return data;
+    }
+
+    function showLogin() {
+      $('loginView').classList.remove('hidden');
+      $('appView').classList.add('hidden');
+    }
+
+    function showApp() {
+      $('loginView').classList.add('hidden');
+      $('appView').classList.remove('hidden');
+    }
+
+    async function loadMe() {
+      try {
+        const data = await api('/admin/api/me');
+        state.user = data.user;
+        showApp();
+        await refresh();
+      } catch (_) {
+        showLogin();
+      }
+    }
+
+    async function refresh() {
+      const data = await api('/admin/api/summary');
+      state.user = data.user;
+      state.clients = data.clients || [];
+      state.providers = data.provider_health || [];
+      state.selected = state.clients.find((client) => client.id === $('clientSelect').value) || state.clients[0] || null;
+      renderSummary(data.summary || {});
+      renderWarnings(data.security_warnings || []);
+      renderRole();
+      renderClientSelect();
+      renderSelectedClient();
+      renderClientsTable();
+      renderProviderTable();
+    }
+
+    function renderSummary(summary) {
+      $('statClients').textContent = `${summary.enabled_clients || 0}/${summary.total_clients || 0}`;
+      $('statRequests').textContent = summary.total_requests || 0;
+      $('statTokens').textContent = summary.total_tokens || 0;
+      $('statCost').textContent = `$${Number(summary.total_cost || 0).toFixed(6)}`;
+    }
+
+    function renderWarnings(warnings) {
+      $('warnings').innerHTML = warnings.map((warning) => `<div class="notice">${escapeHtml(warning)}</div>`).join('');
+    }
+
+    function renderRole() {
+      const user = state.user || { username: 'unknown', role: 'viewer' };
+      $('rolePill').textContent = `${user.username} · ${user.role}`;
+      document.querySelectorAll('.admin-action').forEach((node) => {
+        node.classList.toggle('hidden', user.role !== 'admin');
+      });
+    }
+
+    function renderClientSelect() {
+      $('clientSelect').innerHTML = state.clients.map((client) => {
+        const selected = state.selected && state.selected.id === client.id ? 'selected' : '';
+        return `<option value="${escapeHtml(client.id)}" ${selected}>${escapeHtml(client.name)}</option>`;
+      }).join('');
+    }
+
+    function renderSelectedClient() {
+      const client = state.selected;
+      if (!client) {
+        $('selectedClient').innerHTML = '<p class="muted">No clients yet.</p>';
+        $('usageTable').innerHTML = '';
+        $('rotateBtn').disabled = true;
+        $('toggleBtn').disabled = true;
+        return;
+      }
+      $('rotateBtn').disabled = !client.managed;
+      $('toggleBtn').disabled = !client.managed;
+      $('selectedClient').innerHTML = `
+        <table><tbody>
+          <tr><th>Name</th><td>${escapeHtml(client.name)}</td></tr>
+          <tr><th>Token</th><td><code>${escapeHtml(client.token_prefix || 'configured outside dashboard')}</code></td></tr>
+          <tr><th>Source</th><td>${escapeHtml(client.source || 'config')}</td></tr>
+          <tr><th>Status</th><td class="${client.enabled ? 'ok' : 'danger-text'}">${client.enabled ? 'enabled' : 'disabled'}</td></tr>
+          <tr><th>Tenant</th><td>${escapeHtml(client.tenant_id || '')}</td></tr>
+          <tr><th>Team</th><td>${escapeHtml(client.team_id || '')}</td></tr>
+        </tbody></table>`;
+      const usage = client.usage || {};
+      $('usageTable').innerHTML = rows({
+        Requests: usage.requests || 0,
+        'Prompt tokens': usage.prompt_tokens || 0,
+        'Completion tokens': usage.completion_tokens || 0,
+        'Total tokens': usage.total_tokens || 0,
+        Cost: `$${Number(usage.total_cost || 0).toFixed(6)}`,
+        Models: mapText(usage.models),
+        Providers: mapText(usage.providers),
+        'Cache hits': usage.cache_hits || 0,
+        Window: usage.window || 'all_time',
+      });
+    }
+
+    function renderClientsTable() {
+      $('clientsTable').innerHTML = state.clients.map((client) => `
+        <tr>
+          <td>${escapeHtml(client.name)}</td>
+          <td>${escapeHtml(client.source || 'config')}</td>
+          <td class="${client.enabled ? 'ok' : 'danger-text'}">${client.enabled ? 'enabled' : 'disabled'}</td>
+          <td>${escapeHtml((client.allowed_models || []).join(', ') || '*')}</td>
+          <td>${client.usage?.requests || 0}</td>
+          <td>${formatTime(client.last_used_at)}</td>
+        </tr>`).join('');
+    }
+
+    function renderProviderTable() {
+      $('providerTable').innerHTML = state.providers.map((provider) => `
+        <tr>
+          <td>${escapeHtml(provider.name || provider.provider || 'unknown')}</td>
+          <td>${escapeHtml(provider.model_name || provider.upstream_model || '')}</td>
+          <td class="${provider.healthy === false ? 'danger-text' : 'ok'}">${provider.healthy === false ? 'unhealthy' : 'healthy'}</td>
+          <td>${provider.attempts || 0}</td>
+          <td>${provider.successes || 0}</td>
+          <td>${provider.failures || 0}</td>
+        </tr>`).join('');
+    }
+
+    function rows(values) {
+      return Object.entries(values).map(([key, value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(String(value))}</td></tr>`).join('');
+    }
+
+    function mapText(value) {
+      const entries = Object.entries(value || {});
+      return entries.length ? entries.map(([key, count]) => `${key}: ${count}`).join(', ') : 'none';
+    }
+
+    function formatTime(epoch) {
+      if (!epoch) return 'never';
+      return new Date(epoch * 1000).toLocaleString();
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>'"]/g, (char) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      }[char]));
+    }
+
+    function showToken(token) {
+      $('tokenValue').textContent = token;
+      $('tokenBox').classList.remove('hidden');
+    }
+
+    $('loginForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      $('loginError').textContent = '';
+      try {
+        await api('/admin/api/login', {
+          method: 'POST',
+          body: JSON.stringify({ username: $('username').value, password: $('password').value }),
+        });
+        showApp();
+        await refresh();
+      } catch (error) {
+        $('loginError').textContent = error.message;
+      }
+    });
+
+    $('logoutBtn').addEventListener('click', async () => {
+      await api('/admin/api/logout', { method: 'POST', body: '{}' }).catch(() => ({}));
+      showLogin();
+    });
+
+    $('refreshBtn').addEventListener('click', refresh);
+    $('clientSelect').addEventListener('change', () => {
+      state.selected = state.clients.find((client) => client.id === $('clientSelect').value) || null;
+      renderSelectedClient();
+    });
+
+    $('createForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = await api('/admin/api/clients', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: $('newName').value,
+          allowed_models: $('newModels').value,
+          tenant_id: $('newTenant').value,
+          team_id: $('newTeam').value,
+          user_id: $('newUser').value,
+          budget_reset: $('newBudgetReset').value,
+        }),
+      });
+      showToken(data.token);
+      $('newName').value = '';
+      await refresh();
+      $('clientSelect').value = data.client.id;
+      state.selected = state.clients.find((client) => client.id === data.client.id) || null;
+      renderSelectedClient();
+    });
+
+    $('rotateBtn').addEventListener('click', async () => {
+      if (!state.selected) return;
+      const data = await api(`/admin/api/clients/${state.selected.id}/rotate`, { method: 'POST', body: '{}' });
+      showToken(data.token);
+      await refresh();
+    });
+
+    $('toggleBtn').addEventListener('click', async () => {
+      if (!state.selected) return;
+      await api(`/admin/api/clients/${state.selected.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: !state.selected.enabled }),
+      });
+      await refresh();
+    });
+
+    $('copyTokenBtn').addEventListener('click', async () => {
+      await navigator.clipboard.writeText($('tokenValue').textContent || '');
+      $('copyTokenBtn').textContent = 'Copied';
+      setTimeout(() => { $('copyTokenBtn').textContent = 'Copy'; }, 1200);
+    });
+
+    loadMe();
+  </script>
 </body>
 </html>"""
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _require_admin_user(
+    request: Request,
+    admin_store: GatewayAdminStore,
+    config: GatewayConfig,
+    *,
+    required_role: Optional[str] = None,
+) -> AdminIdentity:
+    if not getattr(config, "admin_auth_enabled", True):
+        return AdminIdentity(username="admin", role=ADMIN_ROLE)
+    identity = admin_store.get_session(_admin_session_token(request))
+    if identity is None:
+        raise HTTPException(status_code=401, detail="SentinelGuard dashboard login required")
+    if required_role == ADMIN_ROLE and identity.role != ADMIN_ROLE:
+        raise HTTPException(status_code=403, detail="SentinelGuard dashboard admin role required")
+    return identity
+
+
+def _admin_session_token(request: Request) -> Optional[str]:
+    token = request.cookies.get(ADMIN_COOKIE_NAME)
+    if token:
+        return token
+    authorization = request.headers.get("authorization") or request.headers.get("Authorization")
+    if authorization and authorization.startswith("Bearer "):
+        return authorization.removeprefix("Bearer ")
+    return None
+
+
+def _admin_identity_payload(identity: AdminIdentity) -> dict[str, Any]:
+    return {"username": identity.username, "role": identity.role}
+
+
+def _admin_summary_payload(
+    config: GatewayConfig,
+    admin_store: GatewayAdminStore,
+    usage_store: Any,
+    identity: AdminIdentity,
+) -> dict[str, Any]:
+    clients = _dashboard_clients(config, admin_store, usage_store)
+    summary = _usage_summary(clients)
+    return {
+        "object": "sentinelguard.gateway.admin.summary",
+        "api_version": GATEWAY_API_VERSION,
+        "user": _admin_identity_payload(identity),
+        "summary": summary,
+        "clients": clients,
+        "provider_health": _provider_health_payload(config)["providers"],
+        "routes": _routes_payload(config),
+        "security_warnings": admin_store.security_warnings(),
+        "metrics": {
+            "prometheus_enabled": config.metrics_enabled,
+            "prometheus_path": "/metrics" if config.metrics_enabled else None,
+        },
+    }
+
+
+def _dashboard_clients(
+    config: GatewayConfig,
+    admin_store: GatewayAdminStore,
+    usage_store: Any,
+) -> list[dict[str, Any]]:
+    clients = [_with_usage(client, usage_store) for client in admin_store.list_clients()]
+    clients.extend(_configured_client_summaries(config, usage_store))
+    return sorted(clients, key=lambda item: (str(item.get("source")), str(item.get("name"))))
+
+
+def _configured_client_summaries(config: GatewayConfig, usage_store: Any) -> list[dict[str, Any]]:
+    clients: list[dict[str, Any]] = []
+    for key in config.virtual_keys:
+        secret = key.key or (os.getenv(key.key_env) if key.key_env else None)
+        key_id = hash_secret(secret) if secret else f"config:{key.name}"
+        clients.append(
+            _with_usage(
+                {
+                    "id": key_id,
+                    "key_id": key_id,
+                    "name": key.name,
+                    "enabled": key.enabled,
+                    "token_prefix": "configured outside dashboard" if secret else "missing",
+                    "tenant_id": key.tenant_id,
+                    "team_id": key.team_id,
+                    "user_id": key.user_id,
+                    "allowed_models": list(key.allowed_models),
+                    "max_requests": key.max_requests,
+                    "max_tokens": key.max_tokens,
+                    "max_budget": key.max_budget,
+                    "budget_reset": key.budget_reset,
+                    "created_at": None,
+                    "updated_at": None,
+                    "rotated_at": None,
+                    "last_used_at": None,
+                    "source": "config",
+                    "managed": False,
+                },
+                usage_store,
+            )
+        )
+    legacy_key = _client_api_key(config)
+    if legacy_key and not config.virtual_keys:
+        key_id = hash_secret(legacy_key)
+        clients.append(
+            _with_usage(
+                {
+                    "id": key_id,
+                    "key_id": key_id,
+                    "name": "gateway-client",
+                    "enabled": True,
+                    "token_prefix": "configured outside dashboard",
+                    "tenant_id": None,
+                    "team_id": None,
+                    "user_id": None,
+                    "allowed_models": ["*"],
+                    "max_requests": None,
+                    "max_tokens": None,
+                    "max_budget": None,
+                    "budget_reset": None,
+                    "created_at": None,
+                    "updated_at": None,
+                    "rotated_at": None,
+                    "last_used_at": None,
+                    "source": "env",
+                    "managed": False,
+                },
+                usage_store,
+            )
+        )
+    return clients
+
+
+def _with_usage(client: Mapping[str, Any], usage_store: Any) -> dict[str, Any]:
+    item = dict(client)
+    item["usage"] = usage_store.snapshot(
+        str(item.get("key_id") or item.get("id")),
+        item.get("budget_reset"),
+    ).to_dict()
+    return item
+
+
+def _client_usage_payload(
+    client_id: str,
+    config: GatewayConfig,
+    admin_store: GatewayAdminStore,
+    usage_store: Any,
+) -> dict[str, Any]:
+    for client in _dashboard_clients(config, admin_store, usage_store):
+        if client.get("id") == client_id or client.get("key_id") == client_id:
+            return {
+                "object": "sentinelguard.gateway.admin.client_usage",
+                "api_version": GATEWAY_API_VERSION,
+                "client": client,
+                "usage": client["usage"],
+            }
+    raise HTTPException(status_code=404, detail="Gateway client not found")
+
+
+def _usage_summary(clients: list[dict[str, Any]]) -> dict[str, Any]:
+    total_requests = 0
+    total_tokens = 0
+    total_cost = 0.0
+    cache_hits = 0
+    for client in clients:
+        usage = client.get("usage") or {}
+        total_requests += int(usage.get("requests") or 0)
+        total_tokens += int(usage.get("total_tokens") or 0)
+        total_cost += float(usage.get("total_cost") or 0.0)
+        cache_hits += int(usage.get("cache_hits") or 0)
+    return {
+        "total_clients": len(clients),
+        "enabled_clients": sum(1 for client in clients if client.get("enabled")),
+        "total_requests": total_requests,
+        "total_tokens": total_tokens,
+        "total_cost": round(total_cost, 10),
+        "cache_hits": cache_hits,
+    }
+
+
+def _payload_text(payload: Mapping[str, Any], key: str) -> Optional[str]:
+    value = payload.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _payload_allowed_models(value: Any) -> Optional[list[str]]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return None
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _client_auth_enabled(config: GatewayConfig) -> bool:
+    if _client_api_key(config) or config.virtual_keys:
+        return True
+    if not config.admin_ui_enabled:
+        return False
+    try:
+        return gateway_admin_store(config).has_clients()
+    except Exception:
+        return False
 
 
 def _audit_scan(

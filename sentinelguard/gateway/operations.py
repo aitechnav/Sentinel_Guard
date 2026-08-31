@@ -556,17 +556,26 @@ def authenticate_gateway_request(
     headers: Mapping[str, str],
     config: GatewayConfig,
 ) -> GatewayAuthResult:
-    """Authenticate a client request against virtual keys or legacy single key."""
+    """Authenticate a client request against managed, virtual, or legacy keys."""
     token = extract_gateway_token(headers)
+    managed_clients_configured = False
+
+    if config.admin_ui_enabled:
+        try:
+            from sentinelguard.gateway.admin import gateway_admin_store
+
+            admin_store = gateway_admin_store(config)
+            managed_clients_configured = admin_store.has_clients()
+            if token:
+                managed_client = admin_store.client_from_token(token)
+                if managed_client is not None:
+                    return GatewayAuthResult(allowed=True, client=managed_client)
+        except Exception:
+            managed_clients_configured = False
 
     if config.virtual_keys:
         if not token:
-            return GatewayAuthResult(
-                allowed=False,
-                status_code=401,
-                error_type="sentinelguard_gateway_unauthorized",
-                message="SentinelGuard gateway authentication failed",
-            )
+            return _auth_failed()
         for virtual_key in config.virtual_keys:
             if not virtual_key.enabled:
                 continue
@@ -576,12 +585,7 @@ def authenticate_gateway_request(
                     allowed=True,
                     client=_client_from_virtual_key(virtual_key, configured),
                 )
-        return GatewayAuthResult(
-            allowed=False,
-            status_code=401,
-            error_type="sentinelguard_gateway_unauthorized",
-            message="SentinelGuard gateway authentication failed",
-        )
+        return _auth_failed()
 
     expected = _legacy_client_api_key(config)
     if expected:
@@ -590,12 +594,10 @@ def authenticate_gateway_request(
                 allowed=True,
                 client=GatewayClient(key_id=hash_secret(expected), name="gateway-client"),
             )
-        return GatewayAuthResult(
-            allowed=False,
-            status_code=401,
-            error_type="sentinelguard_gateway_unauthorized",
-            message="SentinelGuard gateway authentication failed",
-        )
+        return _auth_failed()
+
+    if managed_clients_configured:
+        return _auth_failed()
 
     return GatewayAuthResult(
         allowed=True,
@@ -733,6 +735,15 @@ def estimate_tokens(text: str) -> int:
 def hash_secret(value: str) -> str:
     """Hash secret material for identifiers without storing raw tokens."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _auth_failed() -> GatewayAuthResult:
+    return GatewayAuthResult(
+        allowed=False,
+        status_code=401,
+        error_type="sentinelguard_gateway_unauthorized",
+        message="SentinelGuard gateway authentication failed",
+    )
 
 
 def _client_from_virtual_key(virtual_key: VirtualKeyConfig, secret: str) -> GatewayClient:
