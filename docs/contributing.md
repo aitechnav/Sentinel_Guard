@@ -8,6 +8,17 @@ source .venv/bin/activate
 pip install -e ".[dev,gateway,monitoring]"
 ```
 
+## Optional Node Tooling
+
+SentinelGuard is a Python/FastAPI project and does not require Node.js for the
+current gateway or documentation flow. If future dashboard or frontend tooling
+is added, use Node.js 24. The repo pins this with `.nvmrc` and `.node-version`.
+
+```bash
+nvm use
+node --version
+```
+
 ## Run Checks
 
 ```bash
