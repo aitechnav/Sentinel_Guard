@@ -25,7 +25,7 @@ Use `latest` only for local testing or demos.
 docker run --rm -p 8080:8080 \
   -e OPENAI_API_KEY="$OPENAI_API_KEY" \
   -e SENTINELGUARD_GATEWAY_API_KEY="$SENTINELGUARD_GATEWAY_API_KEY" \
-  aitechnav/sentinelguard:0.0.12
+  aitechnav/sentinelguard:0.0.14
 ```
 
 Then point OpenAI-compatible clients to:
