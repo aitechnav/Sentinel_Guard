@@ -6,6 +6,7 @@ for LLM security scanning with a focus on prompt/output analysis.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -178,7 +179,7 @@ class BaseScanner(ABC):
 
     async def scan_async(self, text: str, **kwargs: Any) -> ScanResult:
         """Async version of scan. Override for truly async implementations."""
-        return self.scan(text, **kwargs)
+        return await asyncio.to_thread(self.scan, text, **kwargs)
 
     def _timed_scan(self, text: str, **kwargs: Any) -> ScanResult:
         """Run scan with timing measurement."""

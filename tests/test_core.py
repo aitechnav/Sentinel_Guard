@@ -1,5 +1,7 @@
 """Tests for SentinelGuard core framework."""
 
+import time
+
 import pytest
 
 from sentinelguard import (
@@ -13,6 +15,7 @@ from sentinelguard import (
 )
 from sentinelguard.core.config import GuardMode, Settings
 from sentinelguard.core.pipeline import ScannerPipeline
+from sentinelguard.core.scanner import PromptScanner
 
 
 class TestScanResult:
@@ -74,7 +77,7 @@ class TestGuardConfig:
             "fail_fast": True,
             "model_warmup": False,
             "prompt_scanners": {
-                "pii": {"enabled": True, "threshold": 0.3},
+                "pii": {"enabled": True, "threshold": 0.3, "timeout_seconds": 2.5},
             },
         }
         config = GuardConfig.from_dict(data)
@@ -83,12 +86,20 @@ class TestGuardConfig:
         assert config.model_warmup is False
         assert "pii" in config.prompt_scanners
         assert config.prompt_scanners["pii"].threshold == 0.3
+        assert config.prompt_scanners["pii"].timeout_seconds == 2.5
 
     def test_to_dict(self):
-        config = GuardConfig(mode=GuardMode.STRICT, model_warmup=False)
+        config = GuardConfig(
+            mode=GuardMode.STRICT,
+            model_warmup=False,
+            prompt_scanners={
+                "pii": ScannerConfig(enabled=True, threshold=0.3, timeout_seconds=2.5),
+            },
+        )
         d = config.to_dict()
         assert d["mode"] == "strict"
         assert d["model_warmup"] is False
+        assert d["prompt_scanners"]["pii"]["timeout_seconds"] == 2.5
 
     def test_direct_string_mode(self):
         config = GuardConfig(mode="strict")
@@ -301,3 +312,33 @@ class TestScannerPipeline:
         )
         pipeline = ScannerPipeline.from_config(config, "prompt")
         assert len(pipeline.scanners) == 1
+
+    def test_pipeline_from_config_tracks_scanner_timeouts(self):
+        config = GuardConfig(
+            prompt_scanners={
+                "pii": ScannerConfig(enabled=True, threshold=0.5, timeout_seconds=1.5),
+            }
+        )
+        pipeline = ScannerPipeline.from_config(config, "prompt")
+        assert pipeline.scanner_timeouts["pii"] == 1.5
+
+    @pytest.mark.asyncio
+    async def test_async_pipeline_times_out_slow_scanner(self):
+        class SlowScanner(PromptScanner):
+            scanner_name = "slow_timeout_test"
+
+            def scan(self, text: str, **kwargs):
+                time.sleep(0.05)
+                return ScanResult(is_valid=True, score=0.0, scanner_name=self.scanner_name)
+
+        pipeline = ScannerPipeline(
+            scanners=[SlowScanner()],
+            scanner_actions={"slow_timeout_test": "block"},
+            scanner_timeouts={"slow_timeout_test": 0.001},
+        )
+
+        result = await pipeline.run_async("hello")
+
+        assert not result.is_valid
+        assert "slow_timeout_test" in result.failed_scanners
+        assert result.results[0].details["error"] == "scanner_timeout"

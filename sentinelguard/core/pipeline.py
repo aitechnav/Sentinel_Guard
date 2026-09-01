@@ -35,12 +35,14 @@ class ScannerPipeline:
         self,
         scanners: Optional[List[BaseScanner]] = None,
         scanner_actions: Optional[Dict[str, str]] = None,
+        scanner_timeouts: Optional[Dict[str, Optional[float]]] = None,
         fail_fast: bool = False,
         parallel: bool = True,
         max_workers: int = 4,
     ):
         self.scanners: List[BaseScanner] = scanners or []
         self.scanner_actions: Dict[str, str] = scanner_actions or {}
+        self.scanner_timeouts: Dict[str, Optional[float]] = scanner_timeouts or {}
         self.fail_fast = fail_fast
         self.parallel = parallel
         self.max_workers = max_workers
@@ -117,6 +119,70 @@ class ScannerPipeline:
 
     def _action_for(self, scanner_name: str) -> str:
         return self.scanner_actions.get(scanner_name, "block").lower()
+
+    def _timeout_for(self, scanner_name: str) -> Optional[float]:
+        timeout = self.scanner_timeouts.get(scanner_name)
+        if timeout is None:
+            return None
+        try:
+            normalized = float(timeout)
+        except (TypeError, ValueError):
+            logger.warning("Invalid timeout for scanner %s: %r", scanner_name, timeout)
+            return None
+        if normalized <= 0:
+            return None
+        return normalized
+
+    def _timeout_result(
+        self,
+        scanner: BaseScanner,
+        timeout_seconds: float,
+        latency_ms: float,
+    ) -> ScanResult:
+        logger.error(
+            "Scanner %s timed out after %.3fs",
+            scanner.scanner_name,
+            timeout_seconds,
+        )
+        return ScanResult(
+            is_valid=False,
+            score=1.0,
+            risk_level=RiskLevel.HIGH,
+            scanner_name=scanner.scanner_name,
+            details={
+                "error": "scanner_timeout",
+                "timeout_seconds": timeout_seconds,
+            },
+            latency_ms=latency_ms,
+        )
+
+    async def _timed_scan_async(self, scanner: BaseScanner, text: str, **kwargs: Any) -> ScanResult:
+        start = time.perf_counter()
+        timeout_seconds = self._timeout_for(scanner.scanner_name)
+        try:
+            scan_coro = scanner.scan_async(text, **kwargs)
+            if timeout_seconds is not None:
+                result = await asyncio.wait_for(scan_coro, timeout=timeout_seconds)
+            else:
+                result = await scan_coro
+            result.latency_ms = (time.perf_counter() - start) * 1000
+            result.scanner_name = scanner.scanner_name
+            return result
+        except asyncio.TimeoutError:
+            return self._timeout_result(
+                scanner,
+                timeout_seconds or 0.0,
+                (time.perf_counter() - start) * 1000,
+            )
+        except Exception as e:
+            logger.error(f"Scanner {scanner.scanner_name} failed: {e}")
+            return ScanResult(
+                is_valid=False,
+                score=1.0,
+                risk_level=RiskLevel.HIGH,
+                scanner_name=scanner.scanner_name,
+                details={"error": str(e)},
+            )
 
     def _classify_results(
         self, results: List[ScanResult]
@@ -205,50 +271,15 @@ class ScannerPipeline:
         """Run scanners sequentially in async mode."""
         results = []
         for scanner in self.scanners:
-            try:
-                start = time.perf_counter()
-                result = await scanner.scan_async(text, **kwargs)
-                result.latency_ms = (time.perf_counter() - start) * 1000
-                result.scanner_name = scanner.scanner_name
-                results.append(result)
-                if self.fail_fast and not result.is_valid:
-                    break
-            except Exception as e:
-                logger.error(f"Scanner {scanner.scanner_name} failed: {e}")
-                results.append(
-                    ScanResult(
-                        is_valid=False,
-                        score=1.0,
-                        risk_level=RiskLevel.HIGH,
-                        scanner_name=scanner.scanner_name,
-                        details={"error": str(e)},
-                    )
-                )
-                if self.fail_fast:
-                    break
+            result = await self._timed_scan_async(scanner, text, **kwargs)
+            results.append(result)
+            if self.fail_fast and not result.is_valid:
+                break
         return results
 
     async def _run_parallel_async(self, text: str, **kwargs: Any) -> List[ScanResult]:
         """Run scanners in parallel using asyncio."""
-
-        async def _run_one(scanner: BaseScanner) -> ScanResult:
-            try:
-                start = time.perf_counter()
-                result = await scanner.scan_async(text, **kwargs)
-                result.latency_ms = (time.perf_counter() - start) * 1000
-                result.scanner_name = scanner.scanner_name
-                return result
-            except Exception as e:
-                logger.error(f"Scanner {scanner.scanner_name} failed: {e}")
-                return ScanResult(
-                    is_valid=False,
-                    score=1.0,
-                    risk_level=RiskLevel.HIGH,
-                    scanner_name=scanner.scanner_name,
-                    details={"error": str(e)},
-                )
-
-        tasks = [_run_one(scanner) for scanner in self.scanners]
+        tasks = [self._timed_scan_async(scanner, text, **kwargs) for scanner in self.scanners]
         return await asyncio.gather(*tasks)
 
     @classmethod
@@ -272,6 +303,7 @@ class ScannerPipeline:
 
         scanners = []
         scanner_actions = {}
+        scanner_timeouts = {}
         for name, scanner_cfg in scanner_configs.items():
             if not scanner_cfg.enabled:
                 continue
@@ -291,10 +323,12 @@ class ScannerPipeline:
             )
             scanners.append(scanner)
             scanner_actions[name] = scanner_cfg.on_fail
+            scanner_timeouts[name] = scanner_cfg.timeout_seconds
 
         return cls(
             scanners=scanners,
             scanner_actions=scanner_actions,
+            scanner_timeouts=scanner_timeouts,
             fail_fast=config.fail_fast,
             parallel=config.parallel,
             max_workers=config.max_workers,

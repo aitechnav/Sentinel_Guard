@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g. 0.0.9). Must match pyproject.toml."
+        description: "Version to publish (e.g. 0.0.11). Must match pyproject.toml."
         required: true
         type: string
       branch:
@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
       dockerhub_image:
-        description: "Docker Hub image, e.g. aitechnav/sentinelguard-gateway"
+        description: "Docker Hub image, e.g. aitechnav/sentinelguard"
         required: false
         type: string
         default: ""
@@ -77,8 +77,12 @@ jobs:
         run: |
           OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           GHCR_IMAGE="ghcr.io/${OWNER}/sentinelguard-gateway"
-          DOCKERHUB_IMAGE=$(echo "${DOCKERHUB_IMAGE_INPUT:-$DOCKERHUB_IMAGE_VAR}" | tr '[:upper:]' '[:lower:]')
           PUBLISH_DOCKERHUB="${PUBLISH_DOCKERHUB_INPUT:-false}"
+          DOCKERHUB_IMAGE_SOURCE="${DOCKERHUB_IMAGE_INPUT:-$DOCKERHUB_IMAGE_VAR}"
+          if [ "$PUBLISH_DOCKERHUB" = "true" ] && [ -z "$DOCKERHUB_IMAGE_SOURCE" ]; then
+            DOCKERHUB_IMAGE_SOURCE="${OWNER}/sentinelguard"
+          fi
+          DOCKERHUB_IMAGE=$(echo "$DOCKERHUB_IMAGE_SOURCE" | tr '[:upper:]' '[:lower:]')
 
           if [ "${{ github.event_name }}" = "release" ] && [ -n "$DOCKERHUB_IMAGE" ]; then
             PUBLISH_DOCKERHUB=true
@@ -86,7 +90,7 @@ jobs:
 
           if [ "$PUBLISH_DOCKERHUB" = "true" ] && [ -z "$DOCKERHUB_IMAGE" ]; then
             echo "ERROR: Docker Hub publishing was requested, but no Docker Hub image was configured."
-            echo "Set the DOCKERHUB_IMAGE repo variable or workflow input, for example aitechnav/sentinelguard-gateway."
+            echo "Set the DOCKERHUB_IMAGE repo variable or workflow input, for example aitechnav/sentinelguard."
             exit 1
           fi
 

@@ -81,24 +81,31 @@ def _evaluate_policy(
 ) -> PolicyDecision:
     categories = _failed_categories(result)
     reason_codes = _reason_codes(result)
+    sensitive_categories = {"pii", "secret"}
     route_constraint = (
         "private"
-        if (direction == "prompt" and config.route_pii_to_private_provider and "pii" in categories)
+        if (
+            direction == "prompt"
+            and (
+                (config.route_pii_to_private_provider and "pii" in categories)
+                or (config.route_sensitive_to_private_provider and categories & sensitive_categories)
+            )
+        )
         else "any"
     )
 
     sanitized_text = result.sanitized_output
     if redact_pii and "pii" in categories:
-        source_text = sanitized_text or text
-        redacted_text = _redact_pii(source_text)
-        if redacted_text != source_text:
-            sanitized_text = redacted_text
-            reason_codes.append("pii_redacted")
-        elif sanitized_text and sanitized_text != text:
+        if sanitized_text and sanitized_text != text:
             reason_codes.append("pii_redacted")
         else:
-            sanitized_text = None
-            reason_codes.append("pii_redaction_unavailable")
+            redacted_text = _redact_pii(text)
+            if redacted_text != text:
+                sanitized_text = redacted_text
+                reason_codes.append("pii_redacted")
+            else:
+                sanitized_text = None
+                reason_codes.append("pii_redaction_unavailable")
 
     if not result.is_valid and block_on_fail:
         if "pii" in categories and categories <= {"pii"} and sanitized_text:

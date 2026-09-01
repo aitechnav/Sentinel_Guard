@@ -15,6 +15,7 @@ from sentinelguard.core.scanner import (
     ScanResult,
     register_scanner,
 )
+from sentinelguard.pii import PIIAnonymizer, PIIEntity, get_presidio_analyzer
 
 FALLBACK_PII_PATTERNS = {
     "EMAIL_ADDRESS": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
@@ -127,15 +128,9 @@ class PIIScanner(BaseScanner):
             return None
         if self._analyzer is not None:
             return self._analyzer
-        try:
-            from presidio_analyzer import AnalyzerEngine
-
-            self._analyzer = AnalyzerEngine()
-            self._presidio_available = True
-            return self._analyzer
-        except Exception:
-            self._presidio_available = False
-            return None
+        self._analyzer = get_presidio_analyzer()
+        self._presidio_available = self._analyzer is not None
+        return self._analyzer
 
     def scan(self, text: str, **kwargs: Any) -> ScanResult:
         analyzer = self._get_analyzer()
@@ -182,7 +177,21 @@ class PIIScanner(BaseScanner):
                 "total_entities": len(results),
                 "method": "presidio",
             },
+            sanitized_output=self._sanitize_presidio_results(text, results) if not is_valid else None,
         )
+
+    def _sanitize_presidio_results(self, text: str, results: List[Any]) -> str:
+        entities = [
+            PIIEntity(
+                entity_type=result.entity_type,
+                start=result.start,
+                end=result.end,
+                score=result.score,
+                text=text[result.start : result.end],
+            )
+            for result in results
+        ]
+        return PIIAnonymizer(default_strategy="replace").anonymize(text, entities).text
 
     def _filter_presidio_results(self, text: str, results: List[Any]) -> List[Any]:
         """Suppress narrow Presidio false positives for technical terms."""
@@ -246,7 +255,26 @@ class PIIScanner(BaseScanner):
                 "total_entities": sum(entities_found.values()),
                 "method": "regex_fallback",
             },
+            sanitized_output=self._sanitize_fallback_results(text) if not is_valid else None,
         )
+
+    def _sanitize_fallback_results(self, text: str) -> str:
+        entities = []
+        allowed = set(self.entities) if self.entities else None
+        for entity_type, pattern in FALLBACK_PII_PATTERNS.items():
+            if allowed is not None and entity_type not in allowed:
+                continue
+            for match in pattern.finditer(text):
+                entities.append(
+                    PIIEntity(
+                        entity_type=entity_type,
+                        start=match.start(),
+                        end=match.end(),
+                        score=self.ENTITY_SENSITIVITY.get(entity_type, 0.5),
+                        text=match.group(0),
+                    )
+                )
+        return PIIAnonymizer(default_strategy="replace").anonymize(text, entities).text
 
     def _score_to_risk(self, score: float) -> RiskLevel:
         if score >= 0.8:

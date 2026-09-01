@@ -20,11 +20,132 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_PRESIDIO_ANALYZER: Optional[Any] = None
+_PRESIDIO_UNAVAILABLE = False
+_PRESIDIO_LOCK = Lock()
+
+
+def get_presidio_analyzer() -> Optional[Any]:
+    """Return a shared Presidio AnalyzerEngine, falling back to regex if unavailable."""
+    global _PRESIDIO_ANALYZER, _PRESIDIO_UNAVAILABLE
+
+    if _PRESIDIO_UNAVAILABLE:
+        return None
+    if _PRESIDIO_ANALYZER is not None:
+        return _PRESIDIO_ANALYZER
+
+    with _PRESIDIO_LOCK:
+        if _PRESIDIO_UNAVAILABLE:
+            return None
+        if _PRESIDIO_ANALYZER is not None:
+            return _PRESIDIO_ANALYZER
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            from presidio_analyzer.nlp_engine import NlpEngineProvider
+
+            model_name = os.getenv("SENTINELGUARD_PII_SPACY_MODEL", "en_core_web_sm")
+            if not _spacy_model_available(model_name) and not _allow_model_download():
+                logger.debug(
+                    "spaCy model %s is not installed, using regex fallback", model_name
+                )
+                _PRESIDIO_UNAVAILABLE = True
+                return None
+            provider = NlpEngineProvider(
+                nlp_configuration=_presidio_nlp_configuration(model_name)
+            )
+            _PRESIDIO_ANALYZER = AnalyzerEngine(
+                nlp_engine=provider.create_engine(),
+                supported_languages=["en"],
+            )
+            logger.info("Presidio AnalyzerEngine initialized with %s", model_name)
+        except Exception as exc:
+            _PRESIDIO_UNAVAILABLE = True
+            logger.debug("Presidio unavailable, using regex fallback: %s", exc)
+            return None
+    return _PRESIDIO_ANALYZER
+
+
+def _allow_model_download() -> bool:
+    value = os.getenv("SENTINELGUARD_PII_DOWNLOAD_MISSING_MODEL", "true")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _spacy_model_available(model_name: str) -> bool:
+    try:
+        import spacy
+
+        return spacy.util.is_package(model_name) or Path(model_name).exists()
+    except Exception:
+        return False
+
+
+def _presidio_nlp_configuration(model_name: str) -> Dict[str, Any]:
+    return {
+        "nlp_engine_name": "spacy",
+        "models": [{"lang_code": "en", "model_name": model_name}],
+        "ner_model_configuration": {
+            "model_to_presidio_entity_mapping": {
+                "PER": "PERSON",
+                "PERSON": "PERSON",
+                "NORP": "NRP",
+                "FAC": "LOCATION",
+                "LOC": "LOCATION",
+                "GPE": "LOCATION",
+                "LOCATION": "LOCATION",
+                "ORG": "ORGANIZATION",
+                "ORGANIZATION": "ORGANIZATION",
+                "DATE": "DATE_TIME",
+                "TIME": "DATE_TIME",
+            },
+            "low_confidence_score_multiplier": 0.4,
+            "low_score_entity_names": [],
+            "labels_to_ignore": [
+                "ORG",
+                "ORGANIZATION",
+                "CARDINAL",
+                "EVENT",
+                "LANGUAGE",
+                "LAW",
+                "MONEY",
+                "ORDINAL",
+                "PERCENT",
+                "PRODUCT",
+                "QUANTITY",
+                "WORK_OF_ART",
+            ],
+        },
+    }
+
+
+def warm_presidio_analyzer() -> bool:
+    """Initialize Presidio and run a tiny analysis so gateway traffic avoids cold start."""
+    analyzer = get_presidio_analyzer()
+    if analyzer is None:
+        return False
+    try:
+        analyzer.analyze(
+            text=(
+                "Warmup Person warmup@example.com 555-123-4567 "
+                "4111111111111111 123-45-6789"
+            ),
+            entities=None,
+            language="en",
+            score_threshold=0.1,
+        )
+    except Exception as exc:
+        logger.debug("Presidio warmup failed: %s", exc)
+        return False
+    return True
+
 
 FALLBACK_PATTERNS = {
     "EMAIL_ADDRESS": (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), 0.85),
@@ -92,15 +213,8 @@ class PIIDetector:
         self.language = language
         self.entities = entities
         self.score_threshold = score_threshold
-        try:
-            from presidio_analyzer import AnalyzerEngine
-            self._analyzer = AnalyzerEngine()
-            self._method = "presidio"
-            logger.info("Presidio AnalyzerEngine initialized")
-        except Exception as exc:
-            self._analyzer = None
-            self._method = "regex_fallback"
-            logger.debug("Presidio unavailable, using regex fallback: %s", exc)
+        self._analyzer = get_presidio_analyzer()
+        self._method = "presidio" if self._analyzer is not None else "regex_fallback"
 
     def detect(self, text: str) -> List[PIIEntity]:
         """Detect PII entities in text using Presidio.
@@ -298,4 +412,11 @@ class PIIAnonymizer:
         return f"<{entity_type}>"
 
 
-__all__ = ["PIIDetector", "PIIAnonymizer", "PIIEntity", "AnonymizedResult"]
+__all__ = [
+    "PIIDetector",
+    "PIIAnonymizer",
+    "PIIEntity",
+    "AnonymizedResult",
+    "get_presidio_analyzer",
+    "warm_presidio_analyzer",
+]

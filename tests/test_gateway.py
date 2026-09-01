@@ -4,9 +4,16 @@ import json
 
 import pytest
 
-from sentinelguard.core.scanner import AggregatedResult, RiskLevel, ScanResult
 from sentinelguard.core.config import GuardConfig
-from sentinelguard.gateway.config import ComplexityRouterConfig, GatewayConfig, ProviderConfig
+from sentinelguard.core.guard import SentinelGuard
+from sentinelguard.core.scanner import AggregatedResult, RiskLevel, ScanResult
+from sentinelguard.gateway.config import (
+    ComplexityRouterConfig,
+    GatewayConfig,
+    GatewayGuardrailConfig,
+    ProviderConfig,
+)
+from sentinelguard.gateway.guardrails import active_guardrails, sensitive_route_store
 from sentinelguard.gateway.operations import (
     ChatUsage,
     GatewayClient,
@@ -61,6 +68,9 @@ class TestGatewayConfig:
         assert config.cache_backend == "memory"
         assert config.routing_strategy == "priority"
         assert config.complexity_router.enabled is False
+        assert config.guardrails == []
+        assert config.guardrails_apply_endpoint_enabled is True
+        assert config.sensitive_session_routing_enabled is False
         assert config.health_check_enabled is True
         assert config.metrics_enabled is True
         assert config.admin_ui_enabled is True
@@ -190,6 +200,44 @@ class TestGatewayConfig:
         assert config.to_dict()["complexity_router"]["enabled"] is True
         assert config.to_dict()["virtual_keys"][0]["key"] == "<configured>"
 
+    def test_from_dict_with_named_guardrails_and_sensitive_routing(self):
+        config = GatewayConfig.from_dict(
+            {
+                "gateway": {
+                    "route_sensitive_to_private_provider": True,
+                    "sensitive_session_routing_enabled": True,
+                    "sensitive_session_ttl_seconds": 900,
+                    "sensitive_session_headers": "x-conversation-id, x-thread-id",
+                    "default_guardrail_names": "privacy",
+                    "guardrails": [
+                        {
+                            "name": "privacy",
+                            "mode": "enforce",
+                            "stages": "pre_call, post_call",
+                            "directions": "prompt, output",
+                            "description": "PII and secret policy",
+                        },
+                        {
+                            "name": "audit-only",
+                            "mode": "log_only",
+                            "stages": ["pre_call"],
+                            "directions": ["prompt"],
+                        },
+                    ],
+                }
+            }
+        )
+
+        assert config.route_sensitive_to_private_provider is True
+        assert config.sensitive_session_routing_enabled is True
+        assert config.sensitive_session_ttl_seconds == 900
+        assert config.sensitive_session_headers == ["x-conversation-id", "x-thread-id"]
+        assert config.default_guardrail_names == ["privacy"]
+        assert config.guardrails[0].name == "privacy"
+        assert config.guardrails[1].mode == "logging_only"
+        assert active_guardrails(config, stage="pre_call", direction="prompt")[0].name == "privacy"
+        assert config.to_dict()["guardrails"][0]["name"] == "privacy"
+
     def test_provider_defaults_are_effective_without_overwriting_config(self):
         anthropic = GatewayConfig(provider="anthropic")
         assert effective_provider(anthropic) == "anthropic"
@@ -316,12 +364,17 @@ class TestGatewayStableManagementApi:
         assert contract["api_version"] == "v1"
         assert contract["stability"] == "stable"
         assert contract["stable_management_endpoints"]["health"] == "/gateway/v1/health"
+        assert contract["stable_management_endpoints"]["guardrails_apply"] == (
+            "/gateway/v1/guardrails/apply"
+        )
+        assert contract["guardrails"]["apply_endpoint"] == "/gateway/v1/guardrails/apply"
         assert "/v1/chat/completions" in contract["openai_compatible_endpoints"]
 
         health = client.get("/gateway/v1/health").json()
         assert health["object"] == "sentinelguard.gateway.health"
         assert health["api_version"] == "v1"
         assert health["client_auth_enabled"] is True
+        assert health["guardrails"][0]["name"] == "sentinelguard-default"
 
         routes = client.get("/gateway/v1/routes").json()
         assert routes["object"] == "sentinelguard.gateway.routes"
@@ -442,6 +495,212 @@ class TestGatewayStableManagementApi:
         assert forwarded_payloads[0]["model"] == "strong-model"
 
 
+class TestGatewayGuardrailApi:
+    def test_guardrails_apply_endpoint_returns_named_decision(self, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+
+        async def fake_scan_prompt(self, text, **kwargs):
+            return AggregatedResult(
+                is_valid=True,
+                results=[
+                    ScanResult(
+                        is_valid=False,
+                        score=0.9,
+                        risk_level=RiskLevel.HIGH,
+                        scanner_name="pii",
+                        sanitized_output="Contact <EMAIL_ADDRESS>",
+                    )
+                ],
+                warning_scanners=["pii"],
+                scanner_actions={"pii": "sanitize"},
+                sanitized_output="Contact <EMAIL_ADDRESS>",
+            )
+
+        monkeypatch.setattr(SentinelGuard, "scan_prompt_async", fake_scan_prompt)
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_empty(),
+            gateway_config=GatewayConfig(
+                admin_ui_enabled=False,
+                guardrails=[GatewayGuardrailConfig(name="privacy")],
+                default_guardrail_names=["privacy"],
+            ),
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        response = client.post(
+            "/gateway/v1/guardrails/apply",
+            json={"input": "Contact jane@example.com", "guardrails": ["privacy"]},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["object"] == "sentinelguard.guardrail.apply"
+        assert body["allowed"] is True
+        assert body["action"] == "redact"
+        assert body["sanitized_text"] == "Contact <EMAIL_ADDRESS>"
+        assert body["guardrails"][0]["name"] == "privacy"
+
+    def test_guardrails_apply_endpoint_rejects_unknown_guardrail(self):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_empty(),
+            gateway_config=GatewayConfig(
+                admin_ui_enabled=False,
+                guardrails=[GatewayGuardrailConfig(name="privacy")],
+            ),
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        response = client.post(
+            "/gateway/v1/guardrails/apply",
+            json={"input": "hello", "guardrails": ["missing"]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "sentinelguard_unknown_guardrail"
+
+    def test_logging_only_guardrail_does_not_block(self, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+
+        async def fake_scan_prompt(self, text, **kwargs):
+            return AggregatedResult(
+                is_valid=False,
+                results=[
+                    ScanResult(
+                        is_valid=False,
+                        score=1.0,
+                        risk_level=RiskLevel.CRITICAL,
+                        scanner_name="secrets",
+                    )
+                ],
+                failed_scanners=["secrets"],
+                scanner_actions={"secrets": "block"},
+            )
+
+        monkeypatch.setattr(SentinelGuard, "scan_prompt_async", fake_scan_prompt)
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_empty(),
+            gateway_config=GatewayConfig(
+                admin_ui_enabled=False,
+                guardrails=[GatewayGuardrailConfig(name="audit-only", mode="logging_only")],
+                default_guardrail_names=["audit-only"],
+            ),
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        response = client.post(
+            "/gateway/v1/guardrails/apply",
+            json={"input": "password=secret-value"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["allowed"] is True
+        assert body["guardrails"][0]["mode"] == "logging_only"
+        assert body["guardrails"][0]["action"] == "block"
+
+    def test_sensitive_session_routing_sticks_to_private_model(self, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        sensitive_route_store().reset()
+        forwarded = []
+
+        async def fake_scan_prompt(self, text, **kwargs):
+            if "alice@example.com" in text:
+                return AggregatedResult(
+                    is_valid=True,
+                    results=[
+                        ScanResult(
+                            is_valid=False,
+                            score=0.9,
+                            risk_level=RiskLevel.HIGH,
+                            scanner_name="pii",
+                            sanitized_output="Contact <EMAIL_ADDRESS>",
+                        )
+                    ],
+                    warning_scanners=["pii"],
+                    scanner_actions={"pii": "sanitize"},
+                    sanitized_output="Contact <EMAIL_ADDRESS>",
+                )
+            return AggregatedResult(is_valid=True)
+
+        async def fake_scan_output(self, text, prompt=None, **kwargs):
+            return AggregatedResult(is_valid=True)
+
+        async def fake_forward(payload, headers, config):
+            forwarded.append({"model": payload.get("model"), "upstream_url": config.upstream_url})
+            return 200, {
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        monkeypatch.setattr(SentinelGuard, "scan_prompt_async", fake_scan_prompt)
+        monkeypatch.setattr(SentinelGuard, "scan_output_async", fake_scan_output)
+        monkeypatch.setattr(
+            "sentinelguard.gateway.providers._forward_chat_completion_single",
+            fake_forward,
+        )
+        config = GatewayConfig(
+            admin_ui_enabled=False,
+            route_sensitive_to_private_provider=True,
+            sensitive_session_routing_enabled=True,
+            complexity_router=ComplexityRouterConfig(
+                enabled=True,
+                auto_model_names=["sentinel-auto"],
+                simple_model="fast-chat",
+                private_model="private-chat",
+            ),
+            providers=[
+                ProviderConfig(
+                    name="public",
+                    provider="openai",
+                    model_name="fast-chat",
+                    upstream_model="public-upstream",
+                    upstream_url="http://public/v1",
+                ),
+                ProviderConfig(
+                    name="private",
+                    provider="openai-compatible",
+                    model_name="private-chat",
+                    upstream_model="private-upstream",
+                    upstream_url="http://private/v1",
+                    private=True,
+                ),
+            ],
+        )
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_empty(),
+            gateway_config=config,
+        )
+        client = fastapi_testclient.TestClient(app)
+        headers = {"x-sentinelguard-session-id": "session-1"}
+
+        first = client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json={
+                "model": "sentinel-auto",
+                "messages": [{"role": "user", "content": "Contact Alice at alice@example.com"}],
+            },
+        )
+        second = client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json={
+                "model": "sentinel-auto",
+                "messages": [{"role": "user", "content": "Say hello"}],
+            },
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert [item["model"] for item in forwarded] == [
+            "private-upstream",
+            "private-upstream",
+        ]
+        assert len(sensitive_route_store().snapshot()) == 1
+        sensitive_route_store().reset()
+
+
 class TestGatewayAdminDashboard:
     def test_admin_can_create_client_token_and_client_can_rotate_it(self, tmp_path, monkeypatch):
         fastapi_testclient = pytest.importorskip("fastapi.testclient")
@@ -487,6 +746,9 @@ class TestGatewayAdminDashboard:
         assert raw_token.startswith("sgw_")
         assert raw_token.startswith(created_body["client"]["token_prefix"].split("...")[0])
 
+        assert "editForm" in client.get("/admin").text
+        assert "editModels" in client.get("/admin").text
+
         auth = authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config)
         assert auth.allowed
         assert auth.client is not None
@@ -494,8 +756,39 @@ class TestGatewayAdminDashboard:
         assert auth.client.team_id == "platform"
         assert auth.client.allowed_models == ("fast-chat",)
 
+        updated = client.patch(
+            f"/admin/api/clients/{client_id}",
+            json={
+                "allowed_models": "sentinel-auto, fast-chat, smart-chat, private-chat",
+                "tenant_id": "tenant-a",
+                "team_id": "ai-platform",
+                "user_id": "chatbot-service",
+            },
+        )
+        assert updated.status_code == 200
+        updated_client = updated.json()["client"]
+        assert updated_client["allowed_models"] == [
+            "sentinel-auto",
+            "fast-chat",
+            "smart-chat",
+            "private-chat",
+        ]
+        assert updated_client["team_id"] == "ai-platform"
+
+        updated_auth = authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config)
+        assert updated_auth.allowed
+        assert updated_auth.client is not None
+        assert updated_auth.client.team_id == "ai-platform"
+        assert updated_auth.client.user_id == "chatbot-service"
+        assert updated_auth.client.allowed_models == (
+            "sentinel-auto",
+            "fast-chat",
+            "smart-chat",
+            "private-chat",
+        )
+
         gateway_usage_store(config).record(
-            auth.client,
+            updated_auth.client,
             model="fast-chat",
             provider="mock",
             usage=ChatUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5, cost=0.01),
@@ -588,6 +881,36 @@ class TestGatewayPolicy:
 
         assert decision.action == PolicyAction.REDACT
         assert decision.allowed
+        assert decision.sanitized_text == "Contact <EMAIL_ADDRESS>"
+        assert "pii_redacted" in decision.reason_codes
+
+    def test_pii_policy_reuses_scanner_sanitized_output(self, monkeypatch):
+        def fail_if_called(text):
+            raise AssertionError("PII redaction should not run twice")
+
+        monkeypatch.setattr("sentinelguard.gateway.policy._redact_pii", fail_if_called)
+        result = AggregatedResult(
+            is_valid=True,
+            results=[
+                ScanResult(
+                    is_valid=False,
+                    score=0.9,
+                    risk_level=RiskLevel.HIGH,
+                    scanner_name="pii",
+                    sanitized_output="Contact <EMAIL_ADDRESS>",
+                )
+            ],
+            warning_scanners=["pii"],
+            sanitized_output="Contact <EMAIL_ADDRESS>",
+        )
+
+        decision = evaluate_prompt_policy(
+            "Contact jane@example.com",
+            result,
+            GatewayConfig(redact_pii=True),
+        )
+
+        assert decision.action == PolicyAction.REDACT
         assert decision.sanitized_text == "Contact <EMAIL_ADDRESS>"
         assert "pii_redacted" in decision.reason_codes
 

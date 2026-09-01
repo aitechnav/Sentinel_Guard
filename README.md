@@ -204,7 +204,7 @@ Open `http://localhost:8080/admin` to see the gateway dashboard. It includes:
 - Login with `admin` and `viewer` roles.
 - Per-client request, token, cost, model, provider, and cache-hit usage.
 - Provider health and routing status.
-- Admin-only client token creation, enable/disable, and rotation.
+- Admin-only client token creation, allowed-model updates, enable/disable, and rotation.
 - One-time token reveal on create or rotate; SentinelGuard stores only a hash.
 
 For local testing, the fallback credentials are `admin` / `sentinelguard` and

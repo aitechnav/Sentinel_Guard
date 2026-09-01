@@ -118,6 +118,8 @@ class TestPIIScanner:
         scanner = PIIScanner(threshold=0.5)
         result = scanner.scan("Contact me at john@example.com")
         assert not result.is_valid
+        assert result.sanitized_output is not None
+        assert "john@example.com" not in result.sanitized_output
 
     def test_credit_card_high_confidence(self):
         scanner = PIIScanner(threshold=0.3)

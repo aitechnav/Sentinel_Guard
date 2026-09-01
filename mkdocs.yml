@@ -45,7 +45,7 @@ nav:
           - Overview: gateway.md
           - Client Integrations: client-integrations.md
           - Stable API: gateway-api.md
-          - Docker Release: docker-release.md
+          - Container Images: container-images.md
       - Security:
           - Scanners: scanners.md
           - Benchmarking: benchmarking.md

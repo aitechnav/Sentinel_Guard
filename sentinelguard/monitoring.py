@@ -69,6 +69,23 @@ if PROMETHEUS_AVAILABLE:
         ["direction"],
         buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
     )
+    SCANNER_LATENCY = Histogram(
+        "sentinelguard_scanner_latency_seconds",
+        "SentinelGuard per-scanner latency in seconds.",
+        ["direction", "scanner"],
+        buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+    )
+    GUARDRAIL_DECISIONS = Counter(
+        "sentinelguard_guardrail_decisions_total",
+        "Total SentinelGuard named guardrail decisions.",
+        ["guardrail", "stage", "direction", "mode", "action"],
+    )
+    GUARDRAIL_LATENCY = Histogram(
+        "sentinelguard_guardrail_latency_seconds",
+        "SentinelGuard named guardrail execution latency in seconds.",
+        ["guardrail", "stage", "direction"],
+        buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+    )
 else:
     GATEWAY_REQUESTS = None
     SCANS = None
@@ -76,6 +93,9 @@ else:
     PROVIDER_ATTEMPTS = None
     PROVIDER_FAILOVERS = None
     SCAN_LATENCY = None
+    SCANNER_LATENCY = None
+    GUARDRAIL_DECISIONS = None
+    GUARDRAIL_LATENCY = None
 
 
 def prometheus_available() -> bool:
@@ -119,7 +139,7 @@ def record_gateway_request(provider: str, streaming: bool, outcome: str) -> None
 
 def record_scan(direction: str, result: AggregatedResult) -> None:
     """Record aggregate scan metrics and per-scanner detections."""
-    if SCANS is None or DETECTIONS is None or SCAN_LATENCY is None:
+    if SCANS is None or DETECTIONS is None or SCAN_LATENCY is None or SCANNER_LATENCY is None:
         return
 
     scan_result = "passed" if result.is_valid else "failed"
@@ -127,6 +147,10 @@ def record_scan(direction: str, result: AggregatedResult) -> None:
     SCAN_LATENCY.labels(direction=direction).observe(result.total_latency_ms / 1000.0)
 
     for scan in result.results:
+        SCANNER_LATENCY.labels(
+            direction=direction,
+            scanner=scan.scanner_name or "unknown",
+        ).observe(max(0.0, scan.latency_ms) / 1000.0)
         if scan.is_valid:
             continue
         action = _safe_action(result.scanner_actions.get(scan.scanner_name))
@@ -137,6 +161,31 @@ def record_scan(direction: str, result: AggregatedResult) -> None:
             risk_level=scan.risk_level.value,
             action=action,
         ).inc()
+
+
+def record_guardrail_decision(
+    guardrail: str,
+    stage: str,
+    direction: str,
+    mode: str,
+    action: str,
+    latency_ms: float,
+) -> None:
+    """Record one named gateway guardrail decision."""
+    if GUARDRAIL_DECISIONS is None or GUARDRAIL_LATENCY is None:
+        return
+    GUARDRAIL_DECISIONS.labels(
+        guardrail=guardrail or "default",
+        stage=stage or "unknown",
+        direction=direction or "unknown",
+        mode=mode or "enforce",
+        action=_safe_action(action),
+    ).inc()
+    GUARDRAIL_LATENCY.labels(
+        guardrail=guardrail or "default",
+        stage=stage or "unknown",
+        direction=direction or "unknown",
+    ).observe(max(0.0, latency_ms) / 1000.0)
 
 
 def record_provider_attempts(attempts: object) -> None:
@@ -162,7 +211,7 @@ def _safe_action(action: Optional[str]) -> str:
     if not action:
         return "block"
     normalized = action.lower()
-    if normalized in {"block", "warn", "allow", "sanitize", "redact"}:
+    if normalized in {"block", "warn", "allow", "sanitize", "redact", "review"}:
         return normalized
     return "other"
 

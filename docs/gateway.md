@@ -109,7 +109,7 @@ The dashboard has two roles:
 
 | Role | Access |
 | --- | --- |
-| `admin` | Read usage, create client tokens, rotate tokens, and enable or disable managed clients |
+| `admin` | Read usage, create client tokens, update allowed models and metadata, rotate tokens, and enable or disable managed clients |
 | `viewer` | Read usage, provider health, and client status only |
 
 Set dashboard credentials with environment variables:
@@ -135,6 +135,11 @@ Base URL: http://localhost:8080/v1
 API key:  generated client token from the dashboard
 Model:    sentinel-auto
 ```
+
+To change the models allowed for an existing dashboard-managed token, select the
+client in `/admin`, edit **Allowed models**, and save. For example:
+`sentinel-auto, fast-chat, smart-chat, private-chat`. This updates the existing
+client token policy; it does not require rotating the token.
 
 A dashboard-managed client can also rotate its own token while it still has a
 valid current token:
@@ -185,6 +190,45 @@ gateway:
 After clients move to the new token, remove the old virtual key and restart the
 gateway again. For Docker or Kubernetes, update the Secret or `.env` value and
 restart the container or pod.
+
+
+## Named Guardrails And Sensitive Routing
+
+Gateway guardrails can be named so teams can expose a stable policy contract to
+apps, IDEs, benchmark jobs, and dashboards. If no custom guardrails are
+configured, SentinelGuard uses the default scanner policy.
+
+```yaml
+gateway:
+  guardrails:
+    - name: privacy
+      mode: enforce
+      stages: [pre_call, post_call, passthrough]
+      directions: [prompt, output]
+      description: PII, secret, and prompt-security enforcement
+
+  default_guardrail_names: [privacy]
+  route_sensitive_to_private_provider: true
+  sensitive_session_routing_enabled: true
+  sensitive_session_ttl_seconds: 1800
+```
+
+When sticky sensitive-session routing is enabled, SentinelGuard can keep a
+conversation on a private provider after PII or secrets are detected. Clients can
+provide `X-SentinelGuard-Session-ID`, `X-Session-ID`, or `X-Conversation-ID` so
+only that conversation is pinned instead of the whole client token.
+
+To scan text without calling an LLM provider, use the stable apply endpoint:
+
+```bash
+curl http://localhost:8080/gateway/v1/guardrails/apply \
+  -H "Authorization: Bearer $SENTINELGUARD_CLIENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Contact Alice at alice@example.com","direction":"prompt"}'
+```
+
+The response contains the final action, named guardrail decisions, scanner
+summary, and sanitized text when available.
 
 ## Supported Providers
 

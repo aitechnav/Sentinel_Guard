@@ -35,12 +35,14 @@ class ScannerConfig:
         threshold: Detection sensitivity (0.0-1.0).
         params: Scanner-specific parameters.
         on_fail: Action to take on failure ('block', 'warn', 'sanitize').
+        timeout_seconds: Optional timeout for async/gateway scanner execution.
     """
 
     enabled: bool = True
     threshold: float = 0.5
     params: Dict[str, Any] = field(default_factory=dict)
     on_fail: str = "block"
+    timeout_seconds: Optional[float] = None
 
 
 @dataclass
@@ -138,6 +140,7 @@ class GuardConfig:
                     "threshold": cfg.threshold,
                     "params": cfg.params,
                     "on_fail": cfg.on_fail,
+                    "timeout_seconds": cfg.timeout_seconds,
                 }
                 for name, cfg in self.prompt_scanners.items()
             },
@@ -147,6 +150,7 @@ class GuardConfig:
                     "threshold": cfg.threshold,
                     "params": cfg.params,
                     "on_fail": cfg.on_fail,
+                    "timeout_seconds": cfg.timeout_seconds,
                 }
                 for name, cfg in self.output_scanners.items()
             },

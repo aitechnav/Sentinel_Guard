@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 import logging
 import os
 from typing import Any, Mapping, Optional
@@ -20,6 +21,16 @@ from sentinelguard.gateway.admin import (
     gateway_admin_store,
 )
 from sentinelguard.gateway.config import GatewayConfig
+from sentinelguard.gateway.guardrails import (
+    apply_gateway_guardrails,
+    guardrail_summary,
+    remember_sensitive_session_if_needed,
+    requested_guardrail_names,
+    resolve_sensitive_session_key,
+    sensitive_session_active,
+    sensitive_route_store,
+    unknown_requested_guardrails,
+)
 from sentinelguard.gateway.operations import (
     GatewayClient,
     authenticate_gateway_request,
@@ -61,7 +72,6 @@ from sentinelguard.monitoring import (
     prometheus_available,
     record_gateway_request,
     record_provider_attempts,
-    record_scan,
     render_metrics,
 )
 
@@ -97,12 +107,20 @@ def create_gateway_app(
     response_cache = gateway_response_cache(config)
     admin_store = gateway_admin_store(config) if config.admin_ui_enabled else None
 
+    @asynccontextmanager
+    async def lifespan(_: Any):
+        if _gateway_uses_pii(guard, config):
+            await asyncio.to_thread(_warm_presidio_for_gateway)
+        await _warm_gateway_scanners(guard, config)
+        yield
+
     app = FastAPI(
         title="SentinelGuard LLM Gateway",
         description="OpenAI-compatible LLM gateway with SentinelGuard scanning",
         version="0.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
 
     app.add_middleware(
@@ -147,6 +165,44 @@ def create_gateway_app(
     @app.get("/gateway/v1/contract")
     async def gateway_contract():
         return _gateway_contract_payload(config)
+
+    @app.post("/guardrails/apply")
+    @app.post("/gateway/v1/guardrails/apply")
+    async def guardrails_apply(request: Request):
+        if not config.guardrails_apply_endpoint_enabled:
+            return _gateway_error_response(
+                501,
+                "sentinelguard_guardrails_apply_not_enabled",
+                "SentinelGuard guardrails apply endpoint is not enabled",
+            )
+        auth = authenticate_gateway_request(request.headers, config)
+        if not auth.allowed or auth.client is None:
+            return _gateway_error_response(auth.status_code, auth.error_type, auth.message)
+
+        payload = await _json_body(request)
+        text = _guardrail_input_text(payload)
+        if not text:
+            return _gateway_error_response(
+                400,
+                "sentinelguard_guardrails_apply_bad_request",
+                "Guardrail apply requires input, text, prompt, output, or messages",
+            )
+
+        requested = requested_guardrail_names(request.headers, payload)
+        unknown = unknown_requested_guardrails(config, requested)
+        if unknown:
+            return _unknown_guardrails_response(unknown)
+
+        result = await apply_gateway_guardrails(
+            guard,
+            text,
+            config,
+            direction=_guardrail_direction(payload),
+            stage=str(payload.get("stage") or "manual"),
+            prompt=_payload_text(payload, "prompt"),
+            requested_guardrails=requested,
+        )
+        return JSONResponse(content=result.to_dict(include_text=True), status_code=200)
 
     if config.admin_ui_enabled and admin_store is not None:
 
@@ -246,9 +302,9 @@ def create_gateway_app(
                 client = admin_store.update_client(
                     client_id,
                     enabled=_optional_bool(payload.get("enabled")),
-                    tenant_id=_payload_text(payload, "tenant_id"),
-                    team_id=_payload_text(payload, "team_id"),
-                    user_id=_payload_text(payload, "user_id"),
+                    tenant_id=_payload_update_text(payload, "tenant_id"),
+                    team_id=_payload_update_text(payload, "team_id"),
+                    user_id=_payload_update_text(payload, "user_id"),
                     allowed_models=(
                         _payload_allowed_models(payload.get("allowed_models"))
                         if "allowed_models" in payload
@@ -257,7 +313,7 @@ def create_gateway_app(
                     max_requests=_optional_int(payload.get("max_requests")),
                     max_tokens=_optional_int(payload.get("max_tokens")),
                     max_budget=_optional_float(payload.get("max_budget")),
-                    budget_reset=_payload_text(payload, "budget_reset"),
+                    budget_reset=_payload_update_text(payload, "budget_reset"),
                 )
             except KeyError:
                 return _gateway_error_response(
@@ -383,6 +439,10 @@ def create_gateway_app(
             payload,
             salt_env=config.audit_hash_salt_env,
         )
+        requested_guardrails = requested_guardrail_names(request.headers, payload)
+        unknown_guardrails = unknown_requested_guardrails(config, requested_guardrails)
+        if unknown_guardrails:
+            return _unknown_guardrails_response(unknown_guardrails)
 
         if payload.get("stream"):
             return await _handle_streaming_chat(
@@ -393,6 +453,7 @@ def create_gateway_app(
                 audit_context,
                 auth.client,
                 usage_store,
+                requested_guardrails,
             )
 
         if not config.enabled:
@@ -425,9 +486,31 @@ def create_gateway_app(
 
         messages = payload["messages"]
         prompt_text = extract_last_user_text(messages)
-        prompt_scan = guard.scan_prompt(prompt_text)
-        record_scan("prompt", prompt_scan)
-        prompt_decision = evaluate_prompt_policy(prompt_text, prompt_scan, config)
+        session_key = resolve_sensitive_session_key(request.headers, auth.client, payload, config)
+        sticky_sensitive_route = sensitive_session_active(config, session_key)
+        prompt_guardrail = await apply_gateway_guardrails(
+            guard,
+            prompt_text,
+            config,
+            direction="prompt",
+            stage="pre_call",
+            requested_guardrails=requested_guardrails,
+            streaming=False,
+        )
+        prompt_scan = prompt_guardrail.scan
+        prompt_decision = prompt_guardrail.decision
+        sticky_sensitive_route = (
+            (
+                prompt_guardrail.has_enforced_guardrail
+                and remember_sensitive_session_if_needed(config, session_key, prompt_scan, prompt_decision)
+            )
+            or sticky_sensitive_route
+        )
+        route_constraint = _prompt_route_constraint(
+            config,
+            prompt_decision,
+            sticky_sensitive_route=sticky_sensitive_route,
+        )
         _audit_scan(config, audit_context, False, "prompt", prompt_scan, provider="unselected")
         if not prompt_decision.allowed:
             record_gateway_request("none", False, "blocked_prompt")
@@ -447,6 +530,7 @@ def create_gateway_app(
             safe_prompt,
             prompt_decision,
             config,
+            route_constraint=route_constraint,
         )
         _emit_routing_decision(config, routing_decision, streaming=False)
 
@@ -457,9 +541,18 @@ def create_gateway_app(
         cached_body = response_cache.get(upstream_payload, config)
         if cached_body is not None:
             output_text = extract_assistant_text(cached_body)
-            output_scan = guard.scan_output(output_text, prompt=safe_prompt)
-            record_scan("output", output_scan)
-            output_decision = evaluate_output_policy(output_text, output_scan, config)
+            output_guardrail = await apply_gateway_guardrails(
+                guard,
+                output_text,
+                config,
+                direction="output",
+                stage="post_call",
+                prompt=safe_prompt,
+                requested_guardrails=requested_guardrails,
+                streaming=False,
+            )
+            output_scan = output_guardrail.scan
+            output_decision = output_guardrail.decision
             _audit_scan(config, audit_context, False, "output", output_scan, provider="cache")
             if not output_decision.allowed:
                 record_gateway_request("cache", False, "blocked_output")
@@ -482,7 +575,7 @@ def create_gateway_app(
             upstream_payload,
             request.headers,
             config,
-            route_constraint=prompt_decision.route_constraint,
+            route_constraint=route_constraint,
         )
         record_provider_attempts(forwarded.attempts)
         if forwarded.status_code >= 400:
@@ -493,9 +586,18 @@ def create_gateway_app(
             )
 
         output_text = extract_assistant_text(forwarded.body)
-        output_scan = guard.scan_output(output_text, prompt=safe_prompt)
-        record_scan("output", output_scan)
-        output_decision = evaluate_output_policy(output_text, output_scan, config)
+        output_guardrail = await apply_gateway_guardrails(
+            guard,
+            output_text,
+            config,
+            direction="output",
+            stage="post_call",
+            prompt=safe_prompt,
+            requested_guardrails=requested_guardrails,
+            streaming=False,
+        )
+        output_scan = output_guardrail.scan
+        output_decision = output_guardrail.decision
         _audit_scan(
             config, audit_context, False, "output", output_scan, provider=forwarded.provider
         )
@@ -536,6 +638,7 @@ async def _handle_streaming_chat(
     audit_context: AuditContext,
     client: GatewayClient,
     usage_store: Any,
+    requested_guardrails: tuple[str, ...] = (),
 ) -> Any:
     if config.streaming_mode != "buffered":
         raise HTTPException(
@@ -575,9 +678,28 @@ async def _handle_streaming_chat(
 
     messages = payload["messages"]
     prompt_text = extract_last_user_text(messages)
-    prompt_scan = guard.scan_prompt(prompt_text)
-    record_scan("prompt", prompt_scan)
-    prompt_decision = evaluate_prompt_policy(prompt_text, prompt_scan, config)
+    session_key = resolve_sensitive_session_key(headers, client, payload, config)
+    sticky_sensitive_route = sensitive_session_active(config, session_key)
+    prompt_guardrail = await apply_gateway_guardrails(
+        guard,
+        prompt_text,
+        config,
+        direction="prompt",
+        stage="pre_call",
+        requested_guardrails=requested_guardrails,
+        streaming=True,
+    )
+    prompt_scan = prompt_guardrail.scan
+    prompt_decision = prompt_guardrail.decision
+    sticky_sensitive_route = (
+        remember_sensitive_session_if_needed(config, session_key, prompt_scan, prompt_decision)
+        or sticky_sensitive_route
+    )
+    route_constraint = _prompt_route_constraint(
+        config,
+        prompt_decision,
+        sticky_sensitive_route=sticky_sensitive_route,
+    )
     _audit_scan(config, audit_context, True, "prompt", prompt_scan, provider="unselected")
     if not prompt_decision.allowed:
         record_gateway_request("none", True, "blocked_prompt")
@@ -596,6 +718,7 @@ async def _handle_streaming_chat(
         safe_prompt,
         prompt_decision,
         config,
+        route_constraint=route_constraint,
     )
     _emit_routing_decision(config, routing_decision, streaming=True)
 
@@ -607,7 +730,7 @@ async def _handle_streaming_chat(
         upstream_payload,
         headers,
         config,
-        route_constraint=prompt_decision.route_constraint,
+        route_constraint=route_constraint,
     )
     record_provider_attempts(forwarded.attempts)
     if forwarded.status_code >= 400:
@@ -618,9 +741,18 @@ async def _handle_streaming_chat(
         )
 
     output_text = extract_assistant_text(forwarded.body)
-    output_scan = guard.scan_output(output_text, prompt=safe_prompt)
-    record_scan("output", output_scan)
-    output_decision = evaluate_output_policy(output_text, output_scan, config)
+    output_guardrail = await apply_gateway_guardrails(
+        guard,
+        output_text,
+        config,
+        direction="output",
+        stage="post_call",
+        prompt=safe_prompt,
+        requested_guardrails=requested_guardrails,
+        streaming=True,
+    )
+    output_scan = output_guardrail.scan
+    output_decision = output_guardrail.decision
     _audit_scan(config, audit_context, True, "output", output_scan, provider=forwarded.provider)
     if not output_decision.allowed:
         record_gateway_request(forwarded.provider, True, "blocked_output")
@@ -671,9 +803,21 @@ async def _passthrough_gateway_request(
     body = await request.body()
     text = _extract_passthrough_text(body)
     if config.enabled and text:
-        scan = guard.scan_prompt(text)
-        record_scan(gateway_name, scan)
-        decision = evaluate_prompt_policy(text, scan, config)
+        requested = requested_guardrail_names(request.headers, {})
+        unknown = unknown_requested_guardrails(config, requested)
+        if unknown:
+            return _unknown_guardrails_response(unknown)
+        guardrail_result = await apply_gateway_guardrails(
+            guard,
+            text,
+            config,
+            direction="prompt",
+            stage="passthrough",
+            requested_guardrails=requested,
+            metric_direction=gateway_name,
+        )
+        scan = guardrail_result.scan
+        decision = guardrail_result.decision
         if not decision.allowed:
             record_gateway_request(gateway_name, False, "blocked_prompt")
             return _blocked_response(gateway_name, scan, status_code=400, decision=decision)
@@ -758,17 +902,30 @@ async def _websocket_upstream_to_client(websocket: WebSocket, upstream: Any) -> 
             await websocket.send_text(str(message))
 
 
+def _prompt_route_constraint(
+    config: GatewayConfig,
+    prompt_decision: PolicyDecision,
+    *,
+    sticky_sensitive_route: bool,
+) -> str:
+    if config.sensitive_session_routing_enabled and sticky_sensitive_route:
+        return "private"
+    return prompt_decision.route_constraint
+
+
 def _route_upstream_payload(
     payload: Mapping[str, Any],
     prompt_text: str,
     prompt_decision: PolicyDecision,
     config: GatewayConfig,
+    *,
+    route_constraint: Optional[str] = None,
 ) -> tuple[dict[str, Any], ComplexityRouteDecision]:
     routing_decision = resolve_complexity_route(
         payload,
         prompt_text,
         config,
-        route_constraint=prompt_decision.route_constraint,
+        route_constraint=route_constraint or prompt_decision.route_constraint,
         highest_risk=prompt_decision.highest_risk,
     )
     return apply_complexity_route(payload, routing_decision), routing_decision
@@ -854,6 +1011,14 @@ def _health_payload(config: GatewayConfig, guard: SentinelGuard) -> dict[str, An
         ],
         "fallback_enabled": config.fallback_enabled,
         "route_pii_to_private_provider": config.route_pii_to_private_provider,
+        "route_sensitive_to_private_provider": config.route_sensitive_to_private_provider,
+        "sensitive_session_routing": {
+            "enabled": config.sensitive_session_routing_enabled,
+            "ttl_seconds": config.sensitive_session_ttl_seconds,
+            "active_sessions": len(sensitive_route_store().snapshot()),
+        },
+        "guardrails": guardrail_summary(config),
+        "guardrails_apply_endpoint_enabled": config.guardrails_apply_endpoint_enabled,
         "redact_pii": config.redact_pii,
         "redact_output_pii": config.redact_output_pii,
         "streaming_mode": config.streaming_mode,
@@ -887,6 +1052,7 @@ def _routes_payload(config: GatewayConfig) -> dict[str, Any]:
         "compatibility_endpoints": endpoints["compatibility"],
         "routing_strategy": config.routing_strategy,
         "complexity_router": config.complexity_router.to_dict(),
+        "guardrails": guardrail_summary(config),
         "models": available_gateway_models(config),
         "providers": [
             {
@@ -955,6 +1121,7 @@ def _gateway_contract_payload(config: GatewayConfig) -> dict[str, Any]:
             "usage": "/gateway/v1/usage",
             "provider_health": "/gateway/v1/provider-health",
             "contract": "/gateway/v1/contract",
+            "guardrails_apply": "/gateway/v1/guardrails/apply",
             "client_token_rotate": "/gateway/v1/client/token/rotate",
         },
         "openai_compatible_endpoints": endpoints["openai_compatible"],
@@ -972,6 +1139,15 @@ def _gateway_contract_payload(config: GatewayConfig) -> dict[str, Any]:
         "routing": {
             "provider_strategy": config.routing_strategy,
             "complexity_router": config.complexity_router.to_dict(),
+            "sensitive_session_routing": {
+                "enabled": config.sensitive_session_routing_enabled,
+                "ttl_seconds": config.sensitive_session_ttl_seconds,
+            },
+        },
+        "guardrails": {
+            "apply_endpoint": "/gateway/v1/guardrails/apply",
+            "configured": guardrail_summary(config),
+            "request_header": "X-SentinelGuard-Guardrails",
         },
     }
 
@@ -986,6 +1162,7 @@ def _gateway_endpoints(config: GatewayConfig) -> dict[str, list[str]]:
         "/gateway/v1/models",
         "/gateway/v1/usage",
         "/gateway/v1/provider-health",
+        "/gateway/v1/guardrails/apply",
         "/gateway/v1/client/token/rotate",
     ]
     compatibility = [
@@ -997,6 +1174,8 @@ def _gateway_endpoints(config: GatewayConfig) -> dict[str, list[str]]:
         "/gateway/provider-health",
     ]
     optional = []
+    if config.guardrails_apply_endpoint_enabled:
+        compatibility.append("/guardrails/apply")
     if config.admin_ui_enabled:
         optional.extend(["/admin", "/admin/api/*"])
     if config.mcp_gateway_enabled:
@@ -1182,6 +1361,18 @@ def _admin_html() -> str:
             <code id="tokenValue"></code>
             <button id="copyTokenBtn">Copy</button>
           </div>
+          <form id="editForm" class="stack admin-action">
+            <h2>Update Selected Client</h2>
+            <div class="field-grid">
+              <label>Allowed models <input id="editModels" placeholder="sentinel-auto, fast-chat, smart-chat, private-chat"></label>
+              <label>Tenant <input id="editTenant" placeholder="tenant-a"></label>
+              <label>Team <input id="editTeam" placeholder="platform"></label>
+              <label>User owner <input id="editUser" placeholder="service-account"></label>
+              <label>Budget reset <select id="editBudgetReset"><option value="">All time</option><option>daily</option><option>monthly</option></select></label>
+            </div>
+            <button id="saveClientBtn" class="primary" type="submit">Save changes</button>
+            <p id="editHelp" class="muted"></p>
+          </form>
         </div>
 
         <div class="panel stack">
@@ -1316,6 +1507,7 @@ def _admin_html() -> str:
         $('usageTable').innerHTML = '';
         $('rotateBtn').disabled = true;
         $('toggleBtn').disabled = true;
+        populateEditForm(null);
         return;
       }
       $('rotateBtn').disabled = !client.managed;
@@ -1326,9 +1518,11 @@ def _admin_html() -> str:
           <tr><th>Token</th><td><code>${escapeHtml(client.token_prefix || 'configured outside dashboard')}</code></td></tr>
           <tr><th>Source</th><td>${escapeHtml(client.source || 'config')}</td></tr>
           <tr><th>Status</th><td class="${client.enabled ? 'ok' : 'danger-text'}">${client.enabled ? 'enabled' : 'disabled'}</td></tr>
+          <tr><th>Models</th><td>${escapeHtml((client.allowed_models || []).join(', ') || '*')}</td></tr>
           <tr><th>Tenant</th><td>${escapeHtml(client.tenant_id || '')}</td></tr>
           <tr><th>Team</th><td>${escapeHtml(client.team_id || '')}</td></tr>
         </tbody></table>`;
+      populateEditForm(client);
       const usage = client.usage || {};
       $('usageTable').innerHTML = rows({
         Requests: usage.requests || 0,
@@ -1341,6 +1535,21 @@ def _admin_html() -> str:
         'Cache hits': usage.cache_hits || 0,
         Window: usage.window || 'all_time',
       });
+    }
+
+    function populateEditForm(client) {
+      const editable = Boolean(client && client.managed && state.user?.role === 'admin');
+      $('editModels').value = client ? ((client.allowed_models || []).join(', ') || '*') : '';
+      $('editTenant').value = client?.tenant_id || '';
+      $('editTeam').value = client?.team_id || '';
+      $('editUser').value = client?.user_id || '';
+      $('editBudgetReset').value = client?.budget_reset || '';
+      ['editModels', 'editTenant', 'editTeam', 'editUser', 'editBudgetReset', 'saveClientBtn'].forEach((id) => {
+        $(id).disabled = !editable;
+      });
+      $('editHelp').textContent = client && !client.managed
+        ? 'This client is managed by environment or YAML config and cannot be edited here.'
+        : '';
     }
 
     function renderClientsTable() {
@@ -1455,6 +1664,26 @@ def _admin_html() -> str:
       await refresh();
     });
 
+    $('editForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!state.selected || !state.selected.managed) return;
+      const clientId = state.selected.id;
+      const data = await api(`/admin/api/clients/${clientId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          allowed_models: $('editModels').value,
+          tenant_id: $('editTenant').value,
+          team_id: $('editTeam').value,
+          user_id: $('editUser').value,
+          budget_reset: $('editBudgetReset').value,
+        }),
+      });
+      await refresh();
+      $('clientSelect').value = data.client.id;
+      state.selected = state.clients.find((client) => client.id === data.client.id) || null;
+      renderSelectedClient();
+    });
+
     $('copyTokenBtn').addEventListener('click', async () => {
       await navigator.clipboard.writeText($('tokenValue').textContent || '');
       $('copyTokenBtn').textContent = 'Copied';
@@ -1473,6 +1702,24 @@ async def _json_body(request: Request) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _guardrail_input_text(payload: Mapping[str, Any]) -> str:
+    for key in ("input", "text", "prompt", "output"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        return extract_last_user_text(messages)
+    return ""
+
+
+def _guardrail_direction(payload: Mapping[str, Any]) -> str:
+    direction = str(payload.get("direction") or "").strip().lower()
+    if direction in {"output", "response", "completion", "post_call"}:
+        return "output"
+    return "prompt"
 
 
 def _require_admin_user(
@@ -1650,12 +1897,59 @@ def _usage_summary(clients: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _gateway_uses_pii(guard: SentinelGuard, config: GatewayConfig) -> bool:
+    if (
+        config.redact_pii
+        or config.redact_output_pii
+        or config.route_pii_to_private_provider
+        or config.route_sensitive_to_private_provider
+        or config.sensitive_session_routing_enabled
+    ):
+        return True
+    scanner_names = set(guard.prompt_scanner_names) | set(guard.output_scanner_names)
+    return bool(scanner_names & {"pii", "anonymize", "deanonymize"})
+
+
+def _warm_presidio_for_gateway() -> None:
+    try:
+        from sentinelguard.pii import warm_presidio_analyzer
+
+        if warm_presidio_analyzer():
+            logger.info("Presidio AnalyzerEngine warmed for gateway traffic")
+    except Exception as exc:
+        logger.debug("Presidio warmup skipped: %s", exc)
+
+
+async def _warm_gateway_scanners(guard: SentinelGuard, config: GatewayConfig) -> None:
+    try:
+        prompt = (
+            "Warmup request for Pat Example at warmup@example.com "
+            "or 555-123-4567."
+        )
+        prompt_scan = await guard.scan_prompt_async(prompt)
+        evaluate_prompt_policy(prompt, prompt_scan, config)
+
+        output = "Warmup response from SentinelGuard."
+        output_scan = await guard.scan_output_async(output, prompt=prompt)
+        evaluate_output_policy(output, output_scan, config)
+        logger.info("SentinelGuard gateway scanners warmed")
+    except Exception as exc:
+        logger.debug("Gateway scanner warmup skipped: %s", exc)
+
+
 def _payload_text(payload: Mapping[str, Any], key: str) -> Optional[str]:
     value = payload.get(key)
     if value is None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _payload_update_text(payload: Mapping[str, Any], key: str) -> Optional[str]:
+    if key not in payload:
+        return None
+    value = payload.get(key)
+    return "" if value is None else str(value)
 
 
 def _payload_allowed_models(value: Any) -> Optional[list[str]]:
@@ -1837,6 +2131,15 @@ def _gateway_error_response(status_code: int, error_type: str, message: str) -> 
                 "type": error_type,
             }
         },
+    )
+
+
+def _unknown_guardrails_response(unknown: list[str]) -> JSONResponse:
+    names = ", ".join(unknown)
+    return _gateway_error_response(
+        400,
+        "sentinelguard_unknown_guardrail",
+        f"Unknown SentinelGuard guardrail requested: {names}",
     )
 
 

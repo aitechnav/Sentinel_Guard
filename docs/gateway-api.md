@@ -19,6 +19,7 @@ GET /gateway/v1/routes
 GET /gateway/v1/models
 GET /gateway/v1/usage
 GET /gateway/v1/provider-health
+POST /gateway/v1/guardrails/apply
 POST /gateway/v1/client/token/rotate
 ```
 
@@ -34,6 +35,31 @@ POST /gateway/v1/client/token/rotate
   "openai_base_path": "/v1"
 }
 ```
+
+
+## Guardrail Apply Endpoint
+
+Use `POST /gateway/v1/guardrails/apply` when an application, test harness, or
+security workflow wants SentinelGuard to evaluate text without forwarding it to
+an upstream model. The same named guardrail policy used by gateway traffic is
+applied here.
+
+```json
+{
+  "input": "Draft a note for Alice at alice@example.com",
+  "direction": "prompt",
+  "guardrails": ["privacy"]
+}
+```
+
+The response includes the final enforcement decision, matched scanners, named
+guardrail decisions, and `sanitized_text` when redaction is available. Unsafe
+content still returns HTTP 200 so callers can inspect the decision and decide
+whether to block, redact, or route. Authentication uses the same gateway client
+token headers as `/v1/chat/completions`.
+
+Runtime chat requests can also select configured guardrails with the
+`X-SentinelGuard-Guardrails` header or a JSON `metadata.guardrails` field.
 
 ## OpenAI-Compatible Runtime Endpoints
 
@@ -102,9 +128,10 @@ POST /admin/api/clients/{client_id}/rotate
 GET  /admin/api/clients/{client_id}/usage
 ```
 
-Dashboard sessions use an HTTP-only cookie. Admin users can create, disable,
-and rotate dashboard-managed client tokens. Viewer users can inspect usage and
-provider health but cannot change client tokens.
+Dashboard sessions use an HTTP-only cookie. Admin users can create, update
+allowed models and metadata, disable, and rotate dashboard-managed client tokens.
+Viewer users can inspect usage and provider health but cannot change client
+tokens.
 
 Client tokens created from the dashboard are stored as hashes. The raw `sgw_...`
 token is returned only when it is created or rotated.

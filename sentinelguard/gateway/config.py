@@ -144,6 +144,60 @@ class ComplexityRouterConfig:
 
 
 @dataclass
+class GatewayGuardrailConfig:
+    """Named gateway guardrail policy applied around LLM traffic."""
+
+    name: str
+    enabled: bool = True
+    mode: str = "enforce"
+    stages: List[str] = field(default_factory=lambda: ["pre_call", "post_call", "passthrough"])
+    directions: List[str] = field(default_factory=lambda: ["prompt", "output", "passthrough"])
+    scanners: List[str] = field(default_factory=list)
+    description: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> GatewayGuardrailConfig:
+        known_fields = cls.__dataclass_fields__
+        values = {key: value for key, value in data.items() if key in known_fields}
+        for key in ("stages", "directions", "scanners"):
+            if key in values:
+                values[key] = _list_value(values.get(key))
+        if "mode" in values:
+            values["mode"] = _normalize_guardrail_mode(values["mode"])
+        return cls(**values)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "enabled": self.enabled,
+            "mode": _normalize_guardrail_mode(self.mode),
+            "stages": list(self.stages),
+            "directions": list(self.directions),
+            "scanners": list(self.scanners),
+            "description": self.description,
+        }
+
+
+def _list_value(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _normalize_guardrail_mode(value: Any) -> str:
+    normalized = str(value or "enforce").strip().lower().replace("-", "_")
+    if normalized in {"log", "log_only", "logging"}:
+        return "logging_only"
+    if normalized not in {"enforce", "logging_only"}:
+        return "enforce"
+    return normalized
+
+
+@dataclass
 class GatewayConfig:
     """Settings for OpenAI-compatible LLM gateway mode."""
 
@@ -163,9 +217,23 @@ class GatewayConfig:
     redact_pii: bool = True
     redact_output_pii: bool = True
     route_pii_to_private_provider: bool = False
+    route_sensitive_to_private_provider: bool = False
+    sensitive_session_routing_enabled: bool = False
+    sensitive_session_ttl_seconds: int = 1800
+    sensitive_session_headers: List[str] = field(
+        default_factory=lambda: [
+            "x-sentinelguard-session-id",
+            "x-session-id",
+            "x-conversation-id",
+        ]
+    )
+    sensitive_session_fallback_to_client: bool = False
     fallback_enabled: bool = True
     routing_strategy: str = "priority"
     complexity_router: ComplexityRouterConfig = field(default_factory=ComplexityRouterConfig)
+    guardrails: List[GatewayGuardrailConfig] = field(default_factory=list)
+    default_guardrail_names: List[str] = field(default_factory=list)
+    guardrails_apply_endpoint_enabled: bool = True
     failover_status_codes: List[int] = field(
         default_factory=lambda: [408, 409, 425, 429, 500, 502, 503, 504]
     )
@@ -225,6 +293,17 @@ class GatewayConfig:
             for virtual_key in gateway_data.pop("virtual_keys", []) or []
             if isinstance(virtual_key, dict)
         ]
+        guardrails = [
+            GatewayGuardrailConfig.from_dict(guardrail)
+            for guardrail in gateway_data.pop("guardrails", []) or []
+            if isinstance(guardrail, dict)
+        ]
+        default_guardrail_names = _list_value(gateway_data.get("default_guardrail_names"))
+        if default_guardrail_names:
+            gateway_data["default_guardrail_names"] = default_guardrail_names
+        sensitive_headers = _list_value(gateway_data.get("sensitive_session_headers"))
+        if sensitive_headers:
+            gateway_data["sensitive_session_headers"] = sensitive_headers
         complexity_router_data = gateway_data.pop("complexity_router", {}) or {}
         complexity_router = (
             ComplexityRouterConfig.from_dict(complexity_router_data)
@@ -235,6 +314,7 @@ class GatewayConfig:
         return cls(
             providers=providers,
             virtual_keys=virtual_keys,
+            guardrails=guardrails,
             complexity_router=complexity_router,
             **{key: value for key, value in gateway_data.items() if key in known_fields},
         )
@@ -257,9 +337,17 @@ class GatewayConfig:
             "redact_pii": self.redact_pii,
             "redact_output_pii": self.redact_output_pii,
             "route_pii_to_private_provider": self.route_pii_to_private_provider,
+            "route_sensitive_to_private_provider": self.route_sensitive_to_private_provider,
+            "sensitive_session_routing_enabled": self.sensitive_session_routing_enabled,
+            "sensitive_session_ttl_seconds": self.sensitive_session_ttl_seconds,
+            "sensitive_session_headers": list(self.sensitive_session_headers),
+            "sensitive_session_fallback_to_client": self.sensitive_session_fallback_to_client,
             "fallback_enabled": self.fallback_enabled,
             "routing_strategy": self.routing_strategy,
             "complexity_router": self.complexity_router.to_dict(),
+            "guardrails": [guardrail.to_dict() for guardrail in self.guardrails],
+            "default_guardrail_names": list(self.default_guardrail_names),
+            "guardrails_apply_endpoint_enabled": self.guardrails_apply_endpoint_enabled,
             "failover_status_codes": list(self.failover_status_codes),
             "health_check_enabled": self.health_check_enabled,
             "unhealthy_ttl_seconds": self.unhealthy_ttl_seconds,
