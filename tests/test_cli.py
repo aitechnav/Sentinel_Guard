@@ -77,6 +77,7 @@ def test_init_with_env_generates_local_tokens(tmp_path, capsys):
     env_text = env_file.read_text(encoding="utf-8")
     assert "SENTINELGUARD_GATEWAY_API_KEY=sgw_" in env_text
     assert "SENTINELGUARD_AUDIT_SALT=sgaudit_" in env_text
+    assert "SENTINELGUARD_ENCRYPTION_KEY=sgencrypt_" in env_text
     assert "OPENAI_API_KEY=" in env_text
 
     output = capsys.readouterr().out

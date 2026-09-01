@@ -235,6 +235,7 @@ def _env_example() -> str:
         # Generate local SentinelGuard tokens and dashboard passwords with:
         #   sentinelguard token
         #   sentinelguard token --prefix sgaudit
+        #   sentinelguard token --prefix sgencrypt
         #   sentinelguard token --prefix sgadmin
         #   sentinelguard token --prefix sgviewer
 
@@ -243,6 +244,7 @@ def _env_example() -> str:
         SENTINELGUARD_IMAGE=sentinelguard-gateway:local
         SENTINELGUARD_GATEWAY_API_KEY=
         SENTINELGUARD_AUDIT_SALT=
+        SENTINELGUARD_ENCRYPTION_KEY=
         SENTINELGUARD_ADMIN_USERNAME=admin
         SENTINELGUARD_ADMIN_PASSWORD=
         SENTINELGUARD_VIEWER_USERNAME=viewer
@@ -268,6 +270,7 @@ def _env_example() -> str:
 def _env_file() -> str:
     gateway_token = generate_gateway_token()
     audit_salt = generate_gateway_token(prefix="sgaudit")
+    encryption_key = generate_gateway_token(prefix="sgencrypt")
     admin_password = generate_gateway_token(prefix="sgadmin")
     viewer_password = generate_gateway_token(prefix="sgviewer")
     return dedent(
@@ -280,6 +283,7 @@ def _env_file() -> str:
         SENTINELGUARD_IMAGE=sentinelguard-gateway:local
         SENTINELGUARD_GATEWAY_API_KEY={gateway_token}
         SENTINELGUARD_AUDIT_SALT={audit_salt}
+        SENTINELGUARD_ENCRYPTION_KEY={encryption_key}
         SENTINELGUARD_ADMIN_USERNAME=admin
         SENTINELGUARD_ADMIN_PASSWORD={admin_password}
         SENTINELGUARD_VIEWER_USERNAME=viewer
@@ -359,6 +363,7 @@ def _docker_compose(docker_image: str) -> str:
               OLLAMA_API_KEY: ${{OLLAMA_API_KEY:-}}
               SENTINELGUARD_GATEWAY_API_KEY: ${{SENTINELGUARD_GATEWAY_API_KEY:-}}
               SENTINELGUARD_AUDIT_SALT: ${{SENTINELGUARD_AUDIT_SALT:-local-dev-audit-salt}}
+              SENTINELGUARD_ENCRYPTION_KEY: ${{SENTINELGUARD_ENCRYPTION_KEY:-}}
               SENTINELGUARD_ADMIN_USERNAME: ${{SENTINELGUARD_ADMIN_USERNAME:-admin}}
               SENTINELGUARD_ADMIN_PASSWORD: ${{SENTINELGUARD_ADMIN_PASSWORD:-sentinelguard}}
               SENTINELGUARD_VIEWER_USERNAME: ${{SENTINELGUARD_VIEWER_USERNAME:-viewer}}
@@ -425,6 +430,7 @@ def _readme(profile: str) -> str:
         python -m pip install "sentinelguard[gateway,monitoring]"
         export SENTINELGUARD_GATEWAY_API_KEY="$(sentinelguard token)"
         export SENTINELGUARD_AUDIT_SALT="$(sentinelguard token --prefix sgaudit)"
+        export SENTINELGUARD_ENCRYPTION_KEY="$(sentinelguard token --prefix sgencrypt)"
         export OPENAI_API_KEY="your-provider-key"
         sentinelguard gateway \\
           --config sentinelguard.yaml \\

@@ -67,7 +67,7 @@ class ProviderConfig:
             "upstream_model": self.upstream_model,
             "upstream_url": self.upstream_url,
             "api_key_env": self.api_key_env,
-            "api_key": self.api_key,
+            "api_key": "<configured>" if self.api_key else None,
             "enabled": self.enabled,
             "private": self.private,
             "priority": self.priority,
@@ -345,6 +345,8 @@ class GatewayConfig:
     admin_password_env: str = "SENTINELGUARD_ADMIN_PASSWORD"
     admin_viewer_username_env: str = "SENTINELGUARD_VIEWER_USERNAME"
     admin_viewer_password_env: str = "SENTINELGUARD_VIEWER_PASSWORD"
+    provider_secret_storage_enabled: bool = True
+    provider_secret_key_env: str = "SENTINELGUARD_ENCRYPTION_KEY"
     otel_enabled: bool = False
     langfuse_enabled: bool = False
     metrics_enabled: bool = True
@@ -406,7 +408,7 @@ class GatewayConfig:
             "provider": self.provider,
             "upstream_url": self.upstream_url,
             "api_key_env": self.api_key_env,
-            "api_key": self.api_key,
+            "api_key": "<configured>" if self.api_key else None,
             "providers": [provider.to_dict() for provider in self.providers],
             "virtual_keys": [virtual_key.to_dict() for virtual_key in self.virtual_keys],
             "client_api_key_env": self.client_api_key_env,
@@ -457,6 +459,8 @@ class GatewayConfig:
             "admin_password_env": self.admin_password_env,
             "admin_viewer_username_env": self.admin_viewer_username_env,
             "admin_viewer_password_env": self.admin_viewer_password_env,
+            "provider_secret_storage_enabled": self.provider_secret_storage_enabled,
+            "provider_secret_key_env": self.provider_secret_key_env,
             "otel_enabled": self.otel_enabled,
             "langfuse_enabled": self.langfuse_enabled,
             "metrics_enabled": self.metrics_enabled,

@@ -1,12 +1,14 @@
 """Tests for SentinelGuard gateway helpers."""
 
 import json
+import sqlite3
 
 import pytest
 
 from sentinelguard.core.config import GuardConfig
 from sentinelguard.core.guard import SentinelGuard
 from sentinelguard.core.scanner import AggregatedResult, RiskLevel, ScanResult
+from sentinelguard.gateway.admin import gateway_admin_store
 from sentinelguard.gateway.config import (
     ComplexityRouterConfig,
     GatewayConfig,
@@ -29,6 +31,7 @@ from sentinelguard.gateway.operations import (
 from sentinelguard.gateway.policy import PolicyAction, evaluate_prompt_policy
 from sentinelguard.gateway.providers import (
     available_gateway_models,
+    configured_providers,
     effective_api_key_env,
     effective_provider,
     effective_upstream_url,
@@ -919,6 +922,61 @@ class TestGatewayAdminDashboard:
         newest_token = client_rotated.json()["token"]
         assert newest_token != new_token
         assert authenticate_gateway_request({"authorization": f"Bearer {newest_token}"}, config).allowed
+
+    def test_admin_can_update_provider_secret_encrypted(self, tmp_path, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        monkeypatch.setenv("SENTINELGUARD_ADMIN_PASSWORD", "admin-pass")
+        monkeypatch.setenv("SENTINELGUARD_VIEWER_PASSWORD", "viewer-pass")
+        monkeypatch.setenv("SENTINELGUARD_ENCRYPTION_KEY", "test-master-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        state_path = tmp_path / "gateway-provider-secrets.sqlite3"
+        config = GatewayConfig(
+            state_backend="sqlite",
+            state_path=str(state_path),
+            providers=[ProviderConfig(name="openai-fast", provider="openai", model_name="fast-chat")],
+        )
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_minimal(),
+            gateway_config=config,
+        )
+        client = fastapi_testclient.TestClient(app)
+        assert client.post(
+            "/admin/api/login",
+            json={"username": "admin", "password": "admin-pass"},
+        ).status_code == 200
+
+        raw_provider_key = "sk-test-provider-secret-value"
+        updated = client.patch(
+            "/admin/api/providers/openai-fast/secret",
+            json={"api_key": raw_provider_key},
+        )
+
+        assert updated.status_code == 200
+        assert raw_provider_key not in json.dumps(updated.json())
+        provider_secret = updated.json()["provider_secret"]
+        assert provider_secret["secret_hint"] == "configured ...alue"
+
+        with sqlite3.connect(state_path) as connection:
+            row = connection.execute(
+                "SELECT encrypted_api_key, secret_hint FROM gateway_provider_secrets WHERE provider_name = ?",
+                ("openai-fast",),
+            ).fetchone()
+        assert row is not None
+        assert raw_provider_key not in row[0]
+        assert row[1] == "configured ...alue"
+
+        admin_store = gateway_admin_store(config)
+        assert admin_store.provider_secret("openai-fast") == raw_provider_key
+        assert configured_providers(config)[0].api_key == raw_provider_key
+
+        summary = client.get("/admin/api/summary").json()
+        provider = summary["provider_secrets"]["providers"][0]
+        assert provider["api_key_source"] == "dashboard"
+        assert provider["secret_hint"] == "configured ...alue"
+
+        removed = client.delete("/admin/api/providers/openai-fast/secret")
+        assert removed.status_code == 200
+        assert configured_providers(config)[0].api_key is None
 
     def test_viewer_can_read_but_cannot_create_client_token(self, tmp_path, monkeypatch):
         fastapi_testclient = pytest.importorskip("fastapi.testclient")
