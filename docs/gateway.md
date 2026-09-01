@@ -141,6 +141,30 @@ client in `/admin`, edit **Allowed models**, and save. For example:
 `sentinel-auto, fast-chat, smart-chat, private-chat`. This updates the existing
 client token policy; it does not require rotating the token.
 
+Admins can also update policy actions per client from the same dashboard form.
+Use this when one app should block attacks and secrets but redact PII, while
+another app should audit PII or block PCI data. Supported actions are `block`,
+`redact`, `audit`, and `allow` for attack, secret, PII, PCI, PHI, and other
+scanner categories.
+
+Admins can update upstream provider API keys from the dashboard when encrypted
+provider-secret storage is enabled. Set one stable encryption key on the
+gateway process:
+
+```bash
+export SENTINELGUARD_ENCRYPTION_KEY="$(sentinelguard token --prefix sgencrypt)"
+```
+
+`sentinelguard init --with-env` also generates this value in the local `.env`
+file used by Docker Compose.
+
+Dashboard-entered OpenAI, Anthropic, Gemini, or other provider keys are stored
+encrypted in the gateway SQLite database and shown only as a masked hint. They
+override the environment/YAML key for that provider route until the dashboard
+key is removed. SentinelGuard cannot rotate provider API keys because those are
+issued by the provider; it can update, replace, test, or remove the configured
+key.
+
 A dashboard-managed client can also rotate its own token while it still has a
 valid current token:
 

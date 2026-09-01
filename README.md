@@ -204,7 +204,8 @@ Open `http://localhost:8080/admin` to see the gateway dashboard. It includes:
 - Login with `admin` and `viewer` roles.
 - Per-client request, token, cost, model, provider, and cache-hit usage.
 - Provider health and routing status.
-- Admin-only client token creation, allowed-model updates, enable/disable, and rotation.
+- Admin-only client token creation, allowed-model updates, per-client policy actions, enable/disable, and rotation.
+- Admin-only upstream provider key updates with masked display and encrypted SQLite storage.
 - One-time token reveal on create or rotate; SentinelGuard stores only a hash.
 
 For local testing, the fallback credentials are `admin` / `sentinelguard` and
@@ -214,6 +215,13 @@ deployments, set `SENTINELGUARD_ADMIN_PASSWORD` and
 client tokens are separate from upstream LLM provider keys. Apps, SDKs, IDEs,
 EKS services, or EC2 services use the generated `sgw_...` token as their API key
 when their base URL points to SentinelGuard.
+
+Set a stable `SENTINELGUARD_ENCRYPTION_KEY` if you want the dashboard to store
+upstream provider API keys. Generate one with
+`sentinelguard token --prefix sgencrypt`, or let
+`sentinelguard init --with-env` write it into the local `.env` file. Without it,
+provider keys should come from env vars, Docker secrets, Kubernetes Secrets, or
+your secret manager.
 
 ## Connect Apps, Services, And IDEs
 

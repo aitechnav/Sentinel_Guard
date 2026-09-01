@@ -11,11 +11,11 @@ import secrets
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from sentinelguard.gateway.config import GatewayConfig
+from sentinelguard.gateway.config import GatewayConfig, normalize_policy_actions
 from sentinelguard.gateway.operations import GatewayClient
 
 ADMIN_COOKIE_NAME = "sentinelguard_admin_session"
@@ -45,6 +45,7 @@ class StoredGatewayToken:
     team_id: Optional[str] = None
     user_id: Optional[str] = None
     allowed_models: tuple[str, ...] = ()
+    policy_actions: dict[str, str] = field(default_factory=dict)
     max_requests: Optional[int] = None
     max_tokens: Optional[int] = None
     max_budget: Optional[float] = None
@@ -65,6 +66,7 @@ class StoredGatewayToken:
             "team_id": self.team_id,
             "user_id": self.user_id,
             "allowed_models": list(self.allowed_models),
+            "policy_actions": normalize_policy_actions(self.policy_actions),
             "max_requests": self.max_requests,
             "max_tokens": self.max_tokens,
             "max_budget": self.max_budget,
@@ -75,6 +77,26 @@ class StoredGatewayToken:
             "last_used_at": self.last_used_at,
             "source": "dashboard",
             "managed": True,
+        }
+
+
+@dataclass(frozen=True)
+class StoredProviderSecret:
+    """One encrypted upstream provider API key record."""
+
+    provider_name: str
+    secret_hint: str
+    created_at: int = 0
+    updated_at: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider_name": self.provider_name,
+            "configured": True,
+            "secret_hint": self.secret_hint,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "source": "dashboard",
         }
 
 
@@ -159,6 +181,70 @@ class GatewayAdminStore:
             ).fetchall()
         return [_stored_token_from_row(row).to_dict() for row in rows]
 
+    def provider_secret_storage_status(self) -> dict[str, Any]:
+        return _provider_secret_storage_status(self.config)
+
+    def list_provider_secrets(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            rows = self._conn().execute(
+                "SELECT * FROM gateway_provider_secrets ORDER BY provider_name"
+            ).fetchall()
+        return {
+            str(row["provider_name"]): _stored_provider_secret_from_row(row).to_dict()
+            for row in rows
+        }
+
+    def provider_secret(self, provider_name: str) -> Optional[str]:
+        fernet = _provider_secret_fernet(self.config)
+        if fernet is None:
+            return None
+        with self._lock:
+            row = self._conn().execute(
+                "SELECT encrypted_api_key FROM gateway_provider_secrets WHERE provider_name = ?",
+                (provider_name,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return fernet.decrypt(str(row["encrypted_api_key"]).encode("ascii")).decode("utf-8")
+        except Exception:
+            return None
+
+    def set_provider_secret(self, provider_name: str, api_key: str) -> dict[str, Any]:
+        provider_name = str(provider_name or "").strip()
+        api_key = str(api_key or "").strip()
+        if not provider_name:
+            raise ValueError("Provider name is required")
+        if not api_key:
+            raise ValueError("Provider API key is required")
+        fernet = _require_provider_secret_fernet(self.config)
+        encrypted = fernet.encrypt(api_key.encode("utf-8")).decode("ascii")
+        now = int(time.time())
+        with self._lock:
+            self._conn().execute(
+                """
+                INSERT INTO gateway_provider_secrets (
+                    provider_name, encrypted_api_key, secret_hint, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(provider_name) DO UPDATE SET
+                    encrypted_api_key = excluded.encrypted_api_key,
+                    secret_hint = excluded.secret_hint,
+                    updated_at = excluded.updated_at
+                """,
+                (provider_name, encrypted, _secret_hint(api_key), now, now),
+            )
+            self._conn().commit()
+        return self.list_provider_secrets()[provider_name]
+
+    def delete_provider_secret(self, provider_name: str) -> None:
+        with self._lock:
+            self._conn().execute(
+                "DELETE FROM gateway_provider_secrets WHERE provider_name = ?",
+                (provider_name,),
+            )
+            self._conn().commit()
+
     def get_client(self, client_id: str) -> Optional[dict[str, Any]]:
         with self._lock:
             row = self._conn().execute(
@@ -190,6 +276,7 @@ class GatewayAdminStore:
             team_id=stored.team_id,
             user_id=stored.user_id,
             allowed_models=stored.allowed_models,
+            policy_actions=normalize_policy_actions(stored.policy_actions),
             max_requests=stored.max_requests,
             max_tokens=stored.max_tokens,
             max_budget=stored.max_budget,
@@ -204,6 +291,7 @@ class GatewayAdminStore:
         team_id: Optional[str] = None,
         user_id: Optional[str] = None,
         allowed_models: Optional[list[str]] = None,
+        policy_actions: Optional[dict[str, str]] = None,
         max_requests: Optional[int] = None,
         max_tokens: Optional[int] = None,
         max_budget: Optional[float] = None,
@@ -216,17 +304,18 @@ class GatewayAdminStore:
         client_id = _client_id()
         now = int(time.time())
         allowed = _normalize_allowed_models(allowed_models)
+        policy = normalize_policy_actions(policy_actions)
         with self._lock:
             try:
                 self._conn().execute(
                     """
                     INSERT INTO gateway_clients (
                         id, name, token_hash, token_prefix, enabled,
-                        tenant_id, team_id, user_id, allowed_models_json,
+                        tenant_id, team_id, user_id, allowed_models_json, policy_actions_json,
                         max_requests, max_tokens, max_budget, budget_reset,
                         created_at, updated_at, rotated_at, last_used_at
                     )
-                    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                     """,
                     (
                         client_id,
@@ -237,6 +326,7 @@ class GatewayAdminStore:
                         _blank_to_none(team_id),
                         _blank_to_none(user_id),
                         json.dumps(allowed, sort_keys=True),
+                        json.dumps(policy, sort_keys=True),
                         max_requests,
                         max_tokens,
                         max_budget,
@@ -283,6 +373,7 @@ class GatewayAdminStore:
         team_id: Optional[str] = None,
         user_id: Optional[str] = None,
         allowed_models: Optional[list[str]] = None,
+        policy_actions: Optional[dict[str, str]] = None,
         max_requests: Optional[int] = None,
         max_tokens: Optional[int] = None,
         max_budget: Optional[float] = None,
@@ -304,6 +395,11 @@ class GatewayAdminStore:
         if allowed_models is not None:
             updates["allowed_models_json"] = json.dumps(
                 _normalize_allowed_models(allowed_models),
+                sort_keys=True,
+            )
+        if policy_actions is not None:
+            updates["policy_actions_json"] = json.dumps(
+                normalize_policy_actions(policy_actions),
                 sort_keys=True,
             )
         if max_requests is not None:
@@ -427,6 +523,7 @@ class GatewayAdminStore:
                     team_id TEXT,
                     user_id TEXT,
                     allowed_models_json TEXT NOT NULL,
+                    policy_actions_json TEXT NOT NULL DEFAULT '{}',
                     max_requests INTEGER,
                     max_tokens INTEGER,
                     max_budget REAL,
@@ -438,7 +535,33 @@ class GatewayAdminStore:
                 )
                 """
             )
+            self._conn().execute(
+                """
+                CREATE TABLE IF NOT EXISTS gateway_provider_secrets (
+                    provider_name TEXT PRIMARY KEY,
+                    encrypted_api_key TEXT NOT NULL,
+                    secret_hint TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            self._ensure_column(
+                "gateway_clients",
+                "policy_actions_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )
             self._conn().commit()
+
+    def _ensure_column(self, table_name: str, column_name: str, definition: str) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._conn().execute(f"PRAGMA table_info({table_name})")
+        }
+        if column_name not in columns:
+            self._conn().execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
+            )
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self, "_connection", None)
@@ -470,6 +593,7 @@ def _admin_state_path(config: GatewayConfig) -> str:
 
 def _stored_token_from_row(row: sqlite3.Row) -> StoredGatewayToken:
     allowed_models = tuple(json.loads(row["allowed_models_json"] or "[]"))
+    policy_actions = normalize_policy_actions(json.loads(row["policy_actions_json"] or "{}"))
     return StoredGatewayToken(
         id=str(row["id"]),
         name=str(row["name"]),
@@ -479,6 +603,7 @@ def _stored_token_from_row(row: sqlite3.Row) -> StoredGatewayToken:
         team_id=row["team_id"],
         user_id=row["user_id"],
         allowed_models=allowed_models,
+        policy_actions=policy_actions,
         max_requests=row["max_requests"],
         max_tokens=row["max_tokens"],
         max_budget=row["max_budget"],
@@ -487,6 +612,15 @@ def _stored_token_from_row(row: sqlite3.Row) -> StoredGatewayToken:
         updated_at=int(row["updated_at"]),
         rotated_at=row["rotated_at"],
         last_used_at=row["last_used_at"],
+    )
+
+
+def _stored_provider_secret_from_row(row: sqlite3.Row) -> StoredProviderSecret:
+    return StoredProviderSecret(
+        provider_name=str(row["provider_name"]),
+        secret_hint=str(row["secret_hint"]),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
     )
 
 
@@ -534,6 +668,63 @@ def _verify_password(password: str, stored_hash: str) -> bool:
         return hmac.compare_digest(actual, expected)
     except Exception:
         return False
+
+
+def _provider_secret_storage_status(config: GatewayConfig) -> dict[str, Any]:
+    key_env = _provider_secret_key_env(config)
+    if not getattr(config, "provider_secret_storage_enabled", True):
+        return {
+            "enabled": False,
+            "key_env": key_env,
+            "reason": "dashboard provider secret storage is disabled",
+        }
+    try:
+        import cryptography.fernet  # noqa: F401
+    except ImportError:
+        return {
+            "enabled": False,
+            "key_env": key_env,
+            "reason": "install cryptography to store encrypted provider secrets",
+        }
+    if not os.getenv(key_env):
+        return {
+            "enabled": False,
+            "key_env": key_env,
+            "reason": f"set {key_env} to enable encrypted dashboard provider secrets",
+        }
+    return {"enabled": True, "key_env": key_env, "reason": "encrypted provider secret storage enabled"}
+
+
+def _provider_secret_fernet(config: GatewayConfig) -> Any:
+    if not _provider_secret_storage_status(config)["enabled"]:
+        return None
+    from cryptography.fernet import Fernet
+
+    raw_key = os.getenv(_provider_secret_key_env(config), "").strip().encode("utf-8")
+    try:
+        return Fernet(raw_key)
+    except Exception:
+        derived = base64.urlsafe_b64encode(hashlib.sha256(raw_key).digest())
+        return Fernet(derived)
+
+
+def _require_provider_secret_fernet(config: GatewayConfig) -> Any:
+    fernet = _provider_secret_fernet(config)
+    if fernet is None:
+        status = _provider_secret_storage_status(config)
+        raise ValueError(str(status["reason"]))
+    return fernet
+
+
+def _provider_secret_key_env(config: GatewayConfig) -> str:
+    return getattr(config, "provider_secret_key_env", "SENTINELGUARD_ENCRYPTION_KEY")
+
+
+def _secret_hint(secret: str) -> str:
+    text = str(secret or "").strip()
+    if len(text) < 4:
+        return "configured"
+    return f"configured ...{text[-4:]}"
 
 
 def _token_prefix(token: str) -> str:

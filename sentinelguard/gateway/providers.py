@@ -382,8 +382,9 @@ def effective_provider(config: GatewayConfig) -> str:
 def configured_providers(config: GatewayConfig) -> list[ProviderConfig]:
     """Return configured provider candidates, preserving single-provider compatibility."""
     if config.providers:
-        return [provider for provider in config.providers if provider.enabled]
-    return [
+        providers = [provider for provider in config.providers if provider.enabled]
+        return _with_dashboard_provider_secrets(config, providers)
+    providers = [
         ProviderConfig(
             name=effective_provider(config),
             provider=config.provider,
@@ -399,6 +400,26 @@ def configured_providers(config: GatewayConfig) -> list[ProviderConfig]:
             timeout_seconds=config.timeout_seconds,
         )
     ]
+    return _with_dashboard_provider_secrets(config, providers)
+
+
+def _with_dashboard_provider_secrets(
+    config: GatewayConfig,
+    providers: list[ProviderConfig],
+) -> list[ProviderConfig]:
+    if not config.admin_ui_enabled or not getattr(config, "provider_secret_storage_enabled", True):
+        return providers
+    try:
+        from sentinelguard.gateway.admin import gateway_admin_store
+
+        admin_store = gateway_admin_store(config)
+        updated = []
+        for provider in providers:
+            dashboard_key = admin_store.provider_secret(provider.name)
+            updated.append(replace(provider, api_key=dashboard_key) if dashboard_key else provider)
+        return updated
+    except Exception:
+        return providers
 
 
 def select_provider_sequence(
@@ -718,6 +739,15 @@ def effective_api_key_env(config: GatewayConfig) -> str:
     if provider in OPENAI_COMPATIBLE_DEFAULTS and configured == "OPENAI_API_KEY":
         return OPENAI_COMPATIBLE_DEFAULTS[provider][1][0]
     return configured or "OPENAI_API_KEY"
+
+
+def api_key_env_names_for_provider(
+    config: GatewayConfig,
+    provider: Optional[ProviderConfig] = None,
+) -> list[str]:
+    """Return all environment variable names checked for a provider key."""
+    provider_config = _gateway_config_for_provider(config, provider) if provider else config
+    return _api_key_env_names(provider_config)
 
 
 async def _forward_openai_compatible(

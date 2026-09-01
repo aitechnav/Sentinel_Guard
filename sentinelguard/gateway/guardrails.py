@@ -162,6 +162,7 @@ async def apply_gateway_guardrails(
     prompt: Optional[str] = None,
     requested_guardrails: Sequence[str] = (),
     metric_direction: Optional[str] = None,
+    client: Optional[GatewayClient] = None,
     streaming: bool = False,
 ) -> GuardrailApplyResult:
     """Scan text once and apply all active named guardrails for the stage."""
@@ -196,7 +197,13 @@ async def apply_gateway_guardrails(
         started_at = time.perf_counter()
         scan = await _scan_text(guard, text, normalized_direction, prompt=prompt)
         record_scan(metric_direction or normalized_direction, scan)
-        base_decision = _evaluate_text_policy(text, scan, config, normalized_direction)
+        base_decision = _evaluate_text_policy(
+            text,
+            scan,
+            config,
+            normalized_direction,
+            client=client,
+        )
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         effective_decision = _effective_decision(base_decision, active, normalized_direction)
         executions = tuple(
@@ -416,10 +423,13 @@ def _evaluate_text_policy(
     scan: AggregatedResult,
     config: GatewayConfig,
     direction: str,
+    *,
+    client: Optional[GatewayClient] = None,
 ) -> PolicyDecision:
+    client_policy = client.policy_actions if client is not None else None
     if direction == "output":
-        return evaluate_output_policy(text, scan, config)
-    return evaluate_prompt_policy(text, scan, config)
+        return evaluate_output_policy(text, scan, config, client_policy=client_policy)
+    return evaluate_prompt_policy(text, scan, config, client_policy=client_policy)
 
 
 def _scan_summary(scan: AggregatedResult) -> dict[str, Any]:

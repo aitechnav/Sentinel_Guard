@@ -20,7 +20,7 @@ from sentinelguard.gateway.admin import (
     GatewayAdminStore,
     gateway_admin_store,
 )
-from sentinelguard.gateway.config import GatewayConfig
+from sentinelguard.gateway.config import GatewayConfig, normalize_policy_actions
 from sentinelguard.gateway.guardrails import (
     apply_gateway_guardrails,
     guardrail_summary,
@@ -44,6 +44,7 @@ from sentinelguard.gateway.operations import (
 )
 from sentinelguard.gateway.observability import emit_gateway_event
 from sentinelguard.gateway.providers import (
+    api_key_env_names_for_provider,
     available_gateway_models,
     configured_providers,
     effective_api_key_env,
@@ -201,6 +202,7 @@ def create_gateway_app(
             stage=str(payload.get("stage") or "manual"),
             prompt=_payload_text(payload, "prompt"),
             requested_guardrails=requested,
+            client=auth.client,
         )
         return JSONResponse(content=result.to_dict(include_text=True), status_code=200)
 
@@ -271,6 +273,7 @@ def create_gateway_app(
                     team_id=_payload_text(payload, "team_id"),
                     user_id=_payload_text(payload, "user_id"),
                     allowed_models=_payload_allowed_models(payload.get("allowed_models")),
+                    policy_actions=_payload_policy_actions(payload.get("policy_actions")),
                     max_requests=_optional_int(payload.get("max_requests")),
                     max_tokens=_optional_int(payload.get("max_tokens")),
                     max_budget=_optional_float(payload.get("max_budget")),
@@ -308,6 +311,11 @@ def create_gateway_app(
                     allowed_models=(
                         _payload_allowed_models(payload.get("allowed_models"))
                         if "allowed_models" in payload
+                        else None
+                    ),
+                    policy_actions=(
+                        _payload_policy_actions(payload.get("policy_actions"))
+                        if "policy_actions" in payload
                         else None
                     ),
                     max_requests=_optional_int(payload.get("max_requests")),
@@ -351,6 +359,45 @@ def create_gateway_app(
         async def admin_client_usage(client_id: str, request: Request):
             _require_admin_user(request, admin_store, config)
             return _client_usage_payload(client_id, config, admin_store, usage_store)
+
+        @app.get("/admin/api/providers")
+        async def admin_providers(request: Request):
+            _require_admin_user(request, admin_store, config)
+            return _admin_provider_secrets_payload(config, admin_store)
+
+        @app.patch("/admin/api/providers/{provider_name}/secret")
+        async def admin_update_provider_secret(provider_name: str, request: Request):
+            _require_admin_user(request, admin_store, config, required_role=ADMIN_ROLE)
+            if provider_name not in _configured_provider_names(config):
+                return _gateway_error_response(
+                    404,
+                    "sentinelguard_provider_not_found",
+                    "SentinelGuard provider route not found",
+                )
+            payload = await _json_body(request)
+            try:
+                provider_secret = admin_store.set_provider_secret(
+                    provider_name,
+                    str(payload.get("api_key") or payload.get("secret") or ""),
+                )
+            except ValueError as exc:
+                return _gateway_error_response(400, "sentinelguard_provider_secret_error", str(exc))
+            return {
+                "provider_secret": provider_secret,
+                "providers": _admin_provider_secrets_payload(config, admin_store)["providers"],
+            }
+
+        @app.delete("/admin/api/providers/{provider_name}/secret")
+        async def admin_delete_provider_secret(provider_name: str, request: Request):
+            _require_admin_user(request, admin_store, config, required_role=ADMIN_ROLE)
+            if provider_name not in _configured_provider_names(config):
+                return _gateway_error_response(
+                    404,
+                    "sentinelguard_provider_not_found",
+                    "SentinelGuard provider route not found",
+                )
+            admin_store.delete_provider_secret(provider_name)
+            return _admin_provider_secrets_payload(config, admin_store)
 
         @app.post("/gateway/v1/client/token/rotate")
         async def rotate_current_client_token(request: Request):
@@ -495,6 +542,7 @@ def create_gateway_app(
             direction="prompt",
             stage="pre_call",
             requested_guardrails=requested_guardrails,
+            client=auth.client,
             streaming=False,
         )
         prompt_scan = prompt_guardrail.scan
@@ -549,6 +597,7 @@ def create_gateway_app(
                 stage="post_call",
                 prompt=safe_prompt,
                 requested_guardrails=requested_guardrails,
+                client=auth.client,
                 streaming=False,
             )
             output_scan = output_guardrail.scan
@@ -594,6 +643,7 @@ def create_gateway_app(
             stage="post_call",
             prompt=safe_prompt,
             requested_guardrails=requested_guardrails,
+            client=auth.client,
             streaming=False,
         )
         output_scan = output_guardrail.scan
@@ -687,6 +737,7 @@ async def _handle_streaming_chat(
         direction="prompt",
         stage="pre_call",
         requested_guardrails=requested_guardrails,
+        client=client,
         streaming=True,
     )
     prompt_scan = prompt_guardrail.scan
@@ -749,6 +800,7 @@ async def _handle_streaming_chat(
         stage="post_call",
         prompt=safe_prompt,
         requested_guardrails=requested_guardrails,
+        client=client,
         streaming=True,
     )
     output_scan = output_guardrail.scan
@@ -815,6 +867,7 @@ async def _passthrough_gateway_request(
             stage="passthrough",
             requested_guardrails=requested,
             metric_direction=gateway_name,
+            client=auth.client,
         )
         scan = guardrail_result.scan
         decision = guardrail_result.decision
@@ -1087,6 +1140,7 @@ def _usage_payload(client: GatewayClient, usage_store: Any) -> dict[str, Any]:
             "tenant_id": client.tenant_id,
             "team_id": client.team_id,
             "user_id": client.user_id,
+            "policy_actions": normalize_policy_actions(client.policy_actions),
         },
         "usage": usage_store.snapshot(
             client.key_id,
@@ -1369,6 +1423,12 @@ def _admin_html() -> str:
               <label>Team <input id="editTeam" placeholder="platform"></label>
               <label>User owner <input id="editUser" placeholder="service-account"></label>
               <label>Budget reset <select id="editBudgetReset"><option value="">All time</option><option>daily</option><option>monthly</option></select></label>
+              <label>Attack action <select id="editPolicyAttack"></select></label>
+              <label>Secrets action <select id="editPolicySecret"></select></label>
+              <label>PII action <select id="editPolicyPii"></select></label>
+              <label>PCI action <select id="editPolicyPci"></select></label>
+              <label>PHI action <select id="editPolicyPhi"></select></label>
+              <label>Other action <select id="editPolicyOther"></select></label>
             </div>
             <button id="saveClientBtn" class="primary" type="submit">Save changes</button>
             <p id="editHelp" class="muted"></p>
@@ -1393,6 +1453,12 @@ def _admin_html() -> str:
             <label>Team <input id="newTeam" placeholder="platform"></label>
             <label>User owner <input id="newUser" placeholder="service-account"></label>
             <label>Budget reset <select id="newBudgetReset"><option value="">All time</option><option>daily</option><option>monthly</option></select></label>
+            <label>Attack action <select id="newPolicyAttack"></select></label>
+            <label>Secrets action <select id="newPolicySecret"></select></label>
+            <label>PII action <select id="newPolicyPii"></select></label>
+            <label>PCI action <select id="newPolicyPci"></select></label>
+            <label>PHI action <select id="newPolicyPhi"></select></label>
+            <label>Other action <select id="newPolicyOther"></select></label>
           </div>
           <button class="primary" type="submit">Generate token</button>
         </form>
@@ -1402,7 +1468,7 @@ def _admin_html() -> str:
         <h2>All Clients</h2>
         <div style="overflow:auto">
           <table>
-            <thead><tr><th>Name</th><th>Source</th><th>Status</th><th>Models</th><th>Requests</th><th>Last used</th></tr></thead>
+            <thead><tr><th>Name</th><th>Source</th><th>Status</th><th>Models</th><th>Policy</th><th>Requests</th><th>Last used</th></tr></thead>
             <tbody id="clientsTable"></tbody>
           </table>
         </div>
@@ -1410,19 +1476,40 @@ def _admin_html() -> str:
 
       <section class="panel stack">
         <h2>Provider Health</h2>
+        <div id="providerSecretStatus" class="muted"></div>
         <div style="overflow:auto">
           <table>
-            <thead><tr><th>Provider</th><th>Model</th><th>Status</th><th>Attempts</th><th>Successes</th><th>Failures</th></tr></thead>
+            <thead><tr><th>Provider</th><th>Model</th><th>Key source</th><th>Secret</th><th>Status</th><th>Attempts</th><th>Successes</th><th>Failures</th></tr></thead>
             <tbody id="providerTable"></tbody>
           </table>
         </div>
+        <form id="providerSecretForm" class="stack admin-action">
+          <h2>Update Provider Key</h2>
+          <div class="field-grid">
+            <label>Provider <select id="providerSecretSelect"></select></label>
+            <label>New API key <input id="providerSecretValue" type="password" autocomplete="off" placeholder="Paste provider API key"></label>
+          </div>
+          <div class="actions">
+            <button id="saveProviderSecretBtn" class="primary" type="submit">Update encrypted key</button>
+            <button id="deleteProviderSecretBtn" type="button" class="danger">Remove dashboard key</button>
+          </div>
+          <p id="providerSecretHelp" class="muted"></p>
+        </form>
       </section>
     </main>
   </section>
 
   <script>
-    const state = { user: null, clients: [], providers: [], selected: null };
+    const state = { user: null, clients: [], providers: [], providerSecrets: {}, selected: null };
     const $ = (id) => document.getElementById(id);
+    const policyFields = ['attack', 'secret', 'pii', 'pci', 'phi', 'other'];
+    const policyOptions = [
+      ['', 'Gateway default'],
+      ['block', 'Block'],
+      ['redact', 'Redact'],
+      ['audit', 'Audit and allow'],
+      ['allow', 'Allow'],
+    ];
 
     async function api(path, options = {}) {
       const response = await fetch(path, {
@@ -1464,6 +1551,7 @@ def _admin_html() -> str:
       state.user = data.user;
       state.clients = data.clients || [];
       state.providers = data.provider_health || [];
+      state.providerSecrets = data.provider_secrets || {};
       state.selected = state.clients.find((client) => client.id === $('clientSelect').value) || state.clients[0] || null;
       renderSummary(data.summary || {});
       renderWarnings(data.security_warnings || []);
@@ -1472,6 +1560,7 @@ def _admin_html() -> str:
       renderSelectedClient();
       renderClientsTable();
       renderProviderTable();
+      renderProviderSecretForm();
     }
 
     function renderSummary(summary) {
@@ -1519,6 +1608,7 @@ def _admin_html() -> str:
           <tr><th>Source</th><td>${escapeHtml(client.source || 'config')}</td></tr>
           <tr><th>Status</th><td class="${client.enabled ? 'ok' : 'danger-text'}">${client.enabled ? 'enabled' : 'disabled'}</td></tr>
           <tr><th>Models</th><td>${escapeHtml((client.allowed_models || []).join(', ') || '*')}</td></tr>
+          <tr><th>Policy</th><td>${escapeHtml(policyText(client.policy_actions))}</td></tr>
           <tr><th>Tenant</th><td>${escapeHtml(client.tenant_id || '')}</td></tr>
           <tr><th>Team</th><td>${escapeHtml(client.team_id || '')}</td></tr>
         </tbody></table>`;
@@ -1544,7 +1634,11 @@ def _admin_html() -> str:
       $('editTeam').value = client?.team_id || '';
       $('editUser').value = client?.user_id || '';
       $('editBudgetReset').value = client?.budget_reset || '';
-      ['editModels', 'editTenant', 'editTeam', 'editUser', 'editBudgetReset', 'saveClientBtn'].forEach((id) => {
+      populatePolicyForm('edit', client?.policy_actions || {});
+      [
+        'editModels', 'editTenant', 'editTeam', 'editUser', 'editBudgetReset',
+        ...policyFields.map((key) => policyControlId('edit', key)), 'saveClientBtn'
+      ].forEach((id) => {
         $(id).disabled = !editable;
       });
       $('editHelp').textContent = client && !client.managed
@@ -1559,21 +1653,45 @@ def _admin_html() -> str:
           <td>${escapeHtml(client.source || 'config')}</td>
           <td class="${client.enabled ? 'ok' : 'danger-text'}">${client.enabled ? 'enabled' : 'disabled'}</td>
           <td>${escapeHtml((client.allowed_models || []).join(', ') || '*')}</td>
+          <td>${escapeHtml(policyText(client.policy_actions))}</td>
           <td>${client.usage?.requests || 0}</td>
           <td>${formatTime(client.last_used_at)}</td>
         </tr>`).join('');
     }
 
     function renderProviderTable() {
+      const secretByName = Object.fromEntries((state.providerSecrets.providers || []).map((provider) => [provider.name, provider]));
       $('providerTable').innerHTML = state.providers.map((provider) => `
         <tr>
           <td>${escapeHtml(provider.name || provider.provider || 'unknown')}</td>
           <td>${escapeHtml(provider.model_name || provider.upstream_model || '')}</td>
+          <td>${escapeHtml(secretByName[provider.name]?.api_key_source || 'unknown')}</td>
+          <td>${escapeHtml(secretByName[provider.name]?.secret_hint || 'not configured')}</td>
           <td class="${provider.healthy === false ? 'danger-text' : 'ok'}">${provider.healthy === false ? 'unhealthy' : 'healthy'}</td>
           <td>${provider.attempts || 0}</td>
           <td>${provider.successes || 0}</td>
           <td>${provider.failures || 0}</td>
         </tr>`).join('');
+    }
+
+    function renderProviderSecretForm() {
+      const storage = state.providerSecrets.secret_storage || {};
+      const providers = state.providerSecrets.providers || [];
+      const selectedName = $('providerSecretSelect')?.value || providers[0]?.name || '';
+      $('providerSecretStatus').textContent = storage.enabled
+        ? `Dashboard provider key storage: enabled using ${storage.key_env}`
+        : `Dashboard provider key storage: ${storage.reason || 'disabled'}`;
+      $('providerSecretSelect').innerHTML = providers.map((provider) => {
+        const selected = provider.name === selectedName ? 'selected' : '';
+        return `<option value="${escapeHtml(provider.name)}" ${selected}>${escapeHtml(provider.name)} (${escapeHtml(provider.api_key_source)})</option>`;
+      }).join('');
+      const canEdit = Boolean(storage.enabled && state.user?.role === 'admin' && providers.length);
+      ['providerSecretSelect', 'providerSecretValue', 'saveProviderSecretBtn', 'deleteProviderSecretBtn'].forEach((id) => {
+        $(id).disabled = !canEdit;
+      });
+      $('providerSecretHelp').textContent = canEdit
+        ? 'Keys saved here are encrypted in the dashboard database and override environment/YAML keys for the selected provider route.'
+        : 'Set the gateway encryption key to enable encrypted provider-key updates from the dashboard.';
     }
 
     function rows(values) {
@@ -1634,6 +1752,7 @@ def _admin_html() -> str:
         body: JSON.stringify({
           name: $('newName').value,
           allowed_models: $('newModels').value,
+          policy_actions: readPolicyForm('new'),
           tenant_id: $('newTenant').value,
           team_id: $('newTeam').value,
           user_id: $('newUser').value,
@@ -1672,6 +1791,7 @@ def _admin_html() -> str:
         method: 'PATCH',
         body: JSON.stringify({
           allowed_models: $('editModels').value,
+          policy_actions: readPolicyForm('edit'),
           tenant_id: $('editTenant').value,
           team_id: $('editTeam').value,
           user_id: $('editUser').value,
@@ -1690,6 +1810,64 @@ def _admin_html() -> str:
       setTimeout(() => { $('copyTokenBtn').textContent = 'Copy'; }, 1200);
     });
 
+    $('providerSecretForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const providerName = $('providerSecretSelect').value;
+      const apiKey = $('providerSecretValue').value;
+      if (!providerName || !apiKey) return;
+      await api(`/admin/api/providers/${encodeURIComponent(providerName)}/secret`, {
+        method: 'PATCH',
+        body: JSON.stringify({ api_key: apiKey }),
+      });
+      $('providerSecretValue').value = '';
+      await refresh();
+    });
+
+    $('deleteProviderSecretBtn').addEventListener('click', async () => {
+      const providerName = $('providerSecretSelect').value;
+      if (!providerName) return;
+      await api(`/admin/api/providers/${encodeURIComponent(providerName)}/secret`, {
+        method: 'DELETE',
+      });
+      $('providerSecretValue').value = '';
+      await refresh();
+    });
+
+    function initPolicyControls() {
+      populatePolicyForm('new', { attack: 'block', secret: 'block', pii: 'redact', pci: 'block', phi: 'redact' });
+      populatePolicyForm('edit', {});
+    }
+
+    function policyControlId(prefix, key) {
+      return `${prefix}Policy${key.charAt(0).toUpperCase()}${key.slice(1)}`;
+    }
+
+    function populatePolicyForm(prefix, policy) {
+      policyFields.forEach((key) => {
+        const node = $(policyControlId(prefix, key));
+        if (!node) return;
+        node.innerHTML = policyOptions.map(([value, label]) => {
+          const selected = (policy?.[key] || '') === value ? 'selected' : '';
+          return `<option value="${escapeHtml(value)}" ${selected}>${escapeHtml(label)}</option>`;
+        }).join('');
+      });
+    }
+
+    function readPolicyForm(prefix) {
+      const policy = {};
+      policyFields.forEach((key) => {
+        const value = $(policyControlId(prefix, key))?.value || '';
+        if (value) policy[key] = value;
+      });
+      return policy;
+    }
+
+    function policyText(policy) {
+      const entries = Object.entries(policy || {});
+      return entries.length ? entries.map(([key, action]) => `${key}: ${action}`).join(', ') : 'gateway default';
+    }
+
+    initPolicyControls();
     loadMe();
   </script>
 </body>
@@ -1768,6 +1946,7 @@ def _admin_summary_payload(
         "summary": summary,
         "clients": clients,
         "provider_health": _provider_health_payload(config)["providers"],
+        "provider_secrets": _admin_provider_secrets_payload(config, admin_store),
         "routes": _routes_payload(config),
         "security_warnings": admin_store.security_warnings(),
         "metrics": {
@@ -1804,6 +1983,7 @@ def _configured_client_summaries(config: GatewayConfig, usage_store: Any) -> lis
                     "team_id": key.team_id,
                     "user_id": key.user_id,
                     "allowed_models": list(key.allowed_models),
+                    "policy_actions": normalize_policy_actions(key.policy_actions),
                     "max_requests": key.max_requests,
                     "max_tokens": key.max_tokens,
                     "max_budget": key.max_budget,
@@ -1833,6 +2013,7 @@ def _configured_client_summaries(config: GatewayConfig, usage_store: Any) -> lis
                     "team_id": None,
                     "user_id": None,
                     "allowed_models": ["*"],
+                    "policy_actions": {},
                     "max_requests": None,
                     "max_tokens": None,
                     "max_budget": None,
@@ -1848,6 +2029,86 @@ def _configured_client_summaries(config: GatewayConfig, usage_store: Any) -> lis
             )
         )
     return clients
+
+
+def _admin_provider_secrets_payload(
+    config: GatewayConfig,
+    admin_store: GatewayAdminStore,
+) -> dict[str, Any]:
+    secret_map = admin_store.list_provider_secrets()
+    storage_status = admin_store.provider_secret_storage_status()
+    providers = []
+    for provider in configured_providers(config):
+        dashboard_secret = secret_map.get(provider.name)
+        dashboard_secret_usable = bool(
+            dashboard_secret
+            and storage_status.get("enabled")
+            and admin_store.provider_secret(provider.name)
+        )
+        providers.append(
+            _provider_secret_summary(config, provider, dashboard_secret, dashboard_secret_usable)
+        )
+    return {
+        "object": "sentinelguard.gateway.admin.provider_secrets",
+        "api_version": GATEWAY_API_VERSION,
+        "secret_storage": storage_status,
+        "providers": providers,
+    }
+
+
+def _provider_secret_summary(
+    config: GatewayConfig,
+    provider: Any,
+    dashboard_secret: Optional[Mapping[str, Any]],
+    dashboard_secret_usable: bool,
+) -> dict[str, Any]:
+    env_names = api_key_env_names_for_provider(config, provider)
+    configured_env = next((env_name for env_name in env_names if os.getenv(env_name)), None)
+    env_configured = configured_env is not None
+    yaml_configured = bool(provider.api_key)
+    dashboard_secret_error = None
+    if dashboard_secret and dashboard_secret_usable:
+        api_key_source = "dashboard"
+        secret_hint = dashboard_secret.get("secret_hint")
+        configured = True
+    elif yaml_configured:
+        api_key_source = "yaml"
+        secret_hint = "configured in YAML"
+        configured = True
+    elif env_configured:
+        api_key_source = "env"
+        secret_hint = f"configured from {configured_env}"
+        configured = True
+    elif dashboard_secret:
+        api_key_source = "dashboard_unavailable"
+        secret_hint = "dashboard key cannot be decrypted without the encryption key"
+        dashboard_secret_error = "Dashboard key is stored but unavailable to runtime"
+        configured = False
+    else:
+        api_key_source = "missing"
+        secret_hint = "not configured"
+        configured = False
+    return {
+        "name": provider.name,
+        "provider": provider.provider,
+        "model_name": provider.model_name,
+        "upstream_model": provider.upstream_model,
+        "upstream_url": provider.upstream_url,
+        "api_key_env": provider.api_key_env,
+        "api_key_env_names": env_names,
+        "api_key_configured": configured,
+        "api_key_source": api_key_source,
+        "secret_hint": secret_hint,
+        "dashboard_secret": bool(dashboard_secret),
+        "dashboard_secret_usable": dashboard_secret_usable,
+        "dashboard_secret_error": dashboard_secret_error,
+        "enabled": provider.enabled,
+        "private": provider.private,
+    }
+
+
+def _configured_provider_names(config: GatewayConfig) -> set[str]:
+    return {provider.name for provider in configured_providers(config)}
 
 
 def _with_usage(client: Mapping[str, Any], usage_store: Any) -> dict[str, Any]:
@@ -1960,6 +2221,10 @@ def _payload_allowed_models(value: Any) -> Optional[list[str]]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return None
+
+
+def _payload_policy_actions(value: Any) -> dict[str, str]:
+    return normalize_policy_actions(value)
 
 
 def _optional_int(value: Any) -> Optional[int]:

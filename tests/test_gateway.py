@@ -1,12 +1,14 @@
 """Tests for SentinelGuard gateway helpers."""
 
 import json
+import sqlite3
 
 import pytest
 
 from sentinelguard.core.config import GuardConfig
 from sentinelguard.core.guard import SentinelGuard
 from sentinelguard.core.scanner import AggregatedResult, RiskLevel, ScanResult
+from sentinelguard.gateway.admin import gateway_admin_store
 from sentinelguard.gateway.config import (
     ComplexityRouterConfig,
     GatewayConfig,
@@ -29,6 +31,7 @@ from sentinelguard.gateway.operations import (
 from sentinelguard.gateway.policy import PolicyAction, evaluate_prompt_policy
 from sentinelguard.gateway.providers import (
     available_gateway_models,
+    configured_providers,
     effective_api_key_env,
     effective_provider,
     effective_upstream_url,
@@ -173,6 +176,11 @@ class TestGatewayConfig:
                             "key": "sg-test-key",
                             "team_id": "team-a",
                             "allowed_models": ["fast-chat"],
+                            "policy_actions": {
+                                "prompt_attack": "block",
+                                "secrets": "block",
+                                "pii": "redact",
+                            },
                             "max_requests": 10,
                             "budget_reset": "daily",
                         }
@@ -196,9 +204,19 @@ class TestGatewayConfig:
         assert config.providers[0].upstream_model == "gpt-4o-mini"
         assert config.providers[0].max_parallel_requests == 5
         assert config.virtual_keys[0].allowed_models == ["fast-chat"]
+        assert config.virtual_keys[0].policy_actions == {
+            "attack": "block",
+            "secret": "block",
+            "pii": "redact",
+        }
         assert config.virtual_keys[0].budget_reset == "daily"
         assert config.to_dict()["complexity_router"]["enabled"] is True
         assert config.to_dict()["virtual_keys"][0]["key"] == "<configured>"
+        assert config.to_dict()["virtual_keys"][0]["policy_actions"] == {
+            "attack": "block",
+            "secret": "block",
+            "pii": "redact",
+        }
 
     def test_from_dict_with_named_guardrails_and_sensitive_routing(self):
         config = GatewayConfig.from_dict(
@@ -318,6 +336,7 @@ class TestGatewayClientAuth:
                         "tenant_id": "tenant-1",
                         "team_id": "research",
                         "allowed_models": ["fast-chat"],
+                        "policy_actions": {"pii": "audit", "secrets": "block"},
                     }
                 ]
             }
@@ -329,6 +348,7 @@ class TestGatewayClientAuth:
         assert auth.client is not None
         assert auth.client.name == "research-team"
         assert auth.client.team_id == "research"
+        assert auth.client.policy_actions == {"pii": "audit", "secret": "block"}
         assert not authenticate_gateway_request({"authorization": "Bearer bad"}, config).allowed
 
 
@@ -559,6 +579,55 @@ class TestGatewayGuardrailApi:
         assert response.status_code == 400
         assert response.json()["error"]["type"] == "sentinelguard_unknown_guardrail"
 
+    def test_guardrails_apply_uses_authenticated_client_policy(self, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+
+        async def fake_scan_prompt(self, text, **kwargs):
+            return AggregatedResult(
+                is_valid=False,
+                results=[
+                    ScanResult(
+                        is_valid=False,
+                        score=0.9,
+                        risk_level=RiskLevel.HIGH,
+                        scanner_name="pii",
+                        sanitized_output="Contact <EMAIL_ADDRESS>",
+                    )
+                ],
+                failed_scanners=["pii"],
+                scanner_actions={"pii": "block"},
+                sanitized_output="Contact <EMAIL_ADDRESS>",
+            )
+
+        monkeypatch.setattr(SentinelGuard, "scan_prompt_async", fake_scan_prompt)
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_empty(),
+            gateway_config=GatewayConfig.from_dict(
+                {
+                    "virtual_keys": [
+                        {
+                            "name": "pii-audit-client",
+                            "key": "sg-pii-audit",
+                            "policy_actions": {"pii": "audit"},
+                        }
+                    ]
+                }
+            ),
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        response = client.post(
+            "/gateway/v1/guardrails/apply",
+            headers={"authorization": "Bearer sg-pii-audit"},
+            json={"input": "Contact jane@example.com"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["allowed"] is True
+        assert body["action"] == "audit"
+        assert "policy:pii_audit" in body["reason_codes"]
+
     def test_logging_only_guardrail_does_not_block(self, monkeypatch):
         fastapi_testclient = pytest.importorskip("fastapi.testclient")
 
@@ -737,6 +806,11 @@ class TestGatewayAdminDashboard:
                 "tenant_id": "tenant-a",
                 "team_id": "platform",
                 "allowed_models": "fast-chat",
+                "policy_actions": {
+                    "attack": "block",
+                    "secret": "block",
+                    "pii": "redact",
+                },
             },
         )
         assert created.status_code == 201
@@ -748,6 +822,7 @@ class TestGatewayAdminDashboard:
 
         assert "editForm" in client.get("/admin").text
         assert "editModels" in client.get("/admin").text
+        assert "editPolicyPii" in client.get("/admin").text
 
         auth = authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config)
         assert auth.allowed
@@ -755,6 +830,11 @@ class TestGatewayAdminDashboard:
         assert auth.client.name == "chatbot-prod"
         assert auth.client.team_id == "platform"
         assert auth.client.allowed_models == ("fast-chat",)
+        assert auth.client.policy_actions == {
+            "attack": "block",
+            "secret": "block",
+            "pii": "redact",
+        }
 
         updated = client.patch(
             f"/admin/api/clients/{client_id}",
@@ -763,6 +843,13 @@ class TestGatewayAdminDashboard:
                 "tenant_id": "tenant-a",
                 "team_id": "ai-platform",
                 "user_id": "chatbot-service",
+                "policy_actions": {
+                    "attack": "block",
+                    "secret": "block",
+                    "pii": "audit",
+                    "pci": "block",
+                    "phi": "redact",
+                },
             },
         )
         assert updated.status_code == 200
@@ -774,6 +861,13 @@ class TestGatewayAdminDashboard:
             "private-chat",
         ]
         assert updated_client["team_id"] == "ai-platform"
+        assert updated_client["policy_actions"] == {
+            "attack": "block",
+            "secret": "block",
+            "pii": "audit",
+            "pci": "block",
+            "phi": "redact",
+        }
 
         updated_auth = authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config)
         assert updated_auth.allowed
@@ -786,6 +880,8 @@ class TestGatewayAdminDashboard:
             "smart-chat",
             "private-chat",
         )
+        assert updated_auth.client.policy_actions["pii"] == "audit"
+        assert updated_auth.client.policy_actions["pci"] == "block"
 
         gateway_usage_store(config).record(
             updated_auth.client,
@@ -826,6 +922,61 @@ class TestGatewayAdminDashboard:
         newest_token = client_rotated.json()["token"]
         assert newest_token != new_token
         assert authenticate_gateway_request({"authorization": f"Bearer {newest_token}"}, config).allowed
+
+    def test_admin_can_update_provider_secret_encrypted(self, tmp_path, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+        monkeypatch.setenv("SENTINELGUARD_ADMIN_PASSWORD", "admin-pass")
+        monkeypatch.setenv("SENTINELGUARD_VIEWER_PASSWORD", "viewer-pass")
+        monkeypatch.setenv("SENTINELGUARD_ENCRYPTION_KEY", "test-master-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        state_path = tmp_path / "gateway-provider-secrets.sqlite3"
+        config = GatewayConfig(
+            state_backend="sqlite",
+            state_path=str(state_path),
+            providers=[ProviderConfig(name="openai-fast", provider="openai", model_name="fast-chat")],
+        )
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_minimal(),
+            gateway_config=config,
+        )
+        client = fastapi_testclient.TestClient(app)
+        assert client.post(
+            "/admin/api/login",
+            json={"username": "admin", "password": "admin-pass"},
+        ).status_code == 200
+
+        raw_provider_key = "sk-test-provider-secret-value"
+        updated = client.patch(
+            "/admin/api/providers/openai-fast/secret",
+            json={"api_key": raw_provider_key},
+        )
+
+        assert updated.status_code == 200
+        assert raw_provider_key not in json.dumps(updated.json())
+        provider_secret = updated.json()["provider_secret"]
+        assert provider_secret["secret_hint"] == "configured ...alue"
+
+        with sqlite3.connect(state_path) as connection:
+            row = connection.execute(
+                "SELECT encrypted_api_key, secret_hint FROM gateway_provider_secrets WHERE provider_name = ?",
+                ("openai-fast",),
+            ).fetchone()
+        assert row is not None
+        assert raw_provider_key not in row[0]
+        assert row[1] == "configured ...alue"
+
+        admin_store = gateway_admin_store(config)
+        assert admin_store.provider_secret("openai-fast") == raw_provider_key
+        assert configured_providers(config)[0].api_key == raw_provider_key
+
+        summary = client.get("/admin/api/summary").json()
+        provider = summary["provider_secrets"]["providers"][0]
+        assert provider["api_key_source"] == "dashboard"
+        assert provider["secret_hint"] == "configured ...alue"
+
+        removed = client.delete("/admin/api/providers/openai-fast/secret")
+        assert removed.status_code == 200
+        assert configured_providers(config)[0].api_key is None
 
     def test_viewer_can_read_but_cannot_create_client_token(self, tmp_path, monkeypatch):
         fastapi_testclient = pytest.importorskip("fastapi.testclient")

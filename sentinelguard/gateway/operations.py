@@ -19,7 +19,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from sentinelguard.gateway.config import GatewayConfig, ProviderConfig, VirtualKeyConfig
+from sentinelguard.gateway.config import (
+    GatewayConfig,
+    ProviderConfig,
+    VirtualKeyConfig,
+    normalize_policy_actions,
+)
 from sentinelguard.gateway.providers import extract_assistant_text, extract_last_user_text
 
 
@@ -33,6 +38,7 @@ class GatewayClient:
     team_id: Optional[str] = None
     user_id: Optional[str] = None
     allowed_models: tuple[str, ...] = ()
+    policy_actions: Mapping[str, str] = field(default_factory=dict)
     max_requests: Optional[int] = None
     max_tokens: Optional[int] = None
     max_budget: Optional[float] = None
@@ -715,6 +721,7 @@ def virtual_key_summary(config: GatewayConfig) -> list[dict[str, Any]]:
             "team_id": key.team_id,
             "user_id": key.user_id,
             "allowed_models": list(key.allowed_models),
+            "policy_actions": normalize_policy_actions(key.policy_actions),
             "max_requests": key.max_requests,
             "max_tokens": key.max_tokens,
             "max_budget": key.max_budget,
@@ -754,6 +761,7 @@ def _client_from_virtual_key(virtual_key: VirtualKeyConfig, secret: str) -> Gate
         team_id=virtual_key.team_id,
         user_id=virtual_key.user_id,
         allowed_models=tuple(virtual_key.allowed_models),
+        policy_actions=normalize_policy_actions(virtual_key.policy_actions),
         max_requests=virtual_key.max_requests,
         max_tokens=virtual_key.max_tokens,
         max_budget=virtual_key.max_budget,

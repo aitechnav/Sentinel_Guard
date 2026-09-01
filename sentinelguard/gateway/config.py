@@ -9,6 +9,29 @@ from typing import Any, Dict, List, Optional, Union
 import yaml
 
 
+POLICY_ACTION_ALIASES = {
+    "audit_only": "audit",
+    "log": "audit",
+    "log_only": "audit",
+    "mask": "redact",
+    "monitor": "audit",
+    "sanitize": "redact",
+    "warn": "audit",
+}
+POLICY_CATEGORY_ALIASES = {
+    "jailbreak": "attack",
+    "jailbreaks": "attack",
+    "prompt_attack": "attack",
+    "prompt_attacks": "attack",
+    "prompt_injection": "attack",
+    "prompt_injections": "attack",
+    "secret": "secret",
+    "secrets": "secret",
+}
+ALLOWED_POLICY_ACTIONS = {"allow", "audit", "block", "redact"}
+ALLOWED_POLICY_CATEGORIES = {"attack", "secret", "pii", "pci", "phi", "other"}
+
+
 @dataclass
 class ProviderConfig:
     """One upstream model provider candidate for gateway routing."""
@@ -44,7 +67,7 @@ class ProviderConfig:
             "upstream_model": self.upstream_model,
             "upstream_url": self.upstream_url,
             "api_key_env": self.api_key_env,
-            "api_key": self.api_key,
+            "api_key": "<configured>" if self.api_key else None,
             "enabled": self.enabled,
             "private": self.private,
             "priority": self.priority,
@@ -70,6 +93,7 @@ class VirtualKeyConfig:
     team_id: Optional[str] = None
     user_id: Optional[str] = None
     allowed_models: List[str] = field(default_factory=list)
+    policy_actions: Dict[str, str] = field(default_factory=dict)
     max_requests: Optional[int] = None
     max_tokens: Optional[int] = None
     max_budget: Optional[float] = None
@@ -78,7 +102,11 @@ class VirtualKeyConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> VirtualKeyConfig:
         known_fields = cls.__dataclass_fields__
-        return cls(**{key: value for key, value in data.items() if key in known_fields})
+        values = {key: value for key, value in data.items() if key in known_fields}
+        policy_actions = data.get("policy_actions", data.get("policy"))
+        if policy_actions is not None:
+            values["policy_actions"] = normalize_policy_actions(policy_actions)
+        return cls(**values)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -90,6 +118,7 @@ class VirtualKeyConfig:
             "team_id": self.team_id,
             "user_id": self.user_id,
             "allowed_models": list(self.allowed_models),
+            "policy_actions": normalize_policy_actions(self.policy_actions),
             "max_requests": self.max_requests,
             "max_tokens": self.max_tokens,
             "max_budget": self.max_budget,
@@ -188,6 +217,58 @@ def _list_value(value: Any) -> List[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def normalize_policy_actions(value: Any) -> Dict[str, str]:
+    """Normalize per-client gateway policy actions.
+
+    Accepted categories are attack, secret, pii, pci, phi, and other. Actions
+    are allow, audit, block, and redact. Common aliases such as secrets,
+    prompt_attack, sanitize, mask, warn, and log_only are accepted.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        return _policy_actions_from_string(value)
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: Dict[str, str] = {}
+    for raw_key, raw_action in value.items():
+        category = _normalize_policy_category(raw_key)
+        action = _normalize_policy_action(raw_action)
+        if category and action:
+            normalized[category] = action
+    return normalized
+
+
+def _policy_actions_from_string(value: str) -> Dict[str, str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    parsed: Dict[str, str] = {}
+    for item in items:
+        if ":" in item:
+            key, action = item.split(":", 1)
+        elif "=" in item:
+            key, action = item.split("=", 1)
+        else:
+            continue
+        category = _normalize_policy_category(key)
+        normalized_action = _normalize_policy_action(action)
+        if category and normalized_action:
+            parsed[category] = normalized_action
+    return parsed
+
+
+def _normalize_policy_category(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    normalized = POLICY_CATEGORY_ALIASES.get(normalized, normalized)
+    return normalized if normalized in ALLOWED_POLICY_CATEGORIES else None
+
+
+def _normalize_policy_action(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    normalized = POLICY_ACTION_ALIASES.get(normalized, normalized)
+    return normalized if normalized in ALLOWED_POLICY_ACTIONS else None
+
+
 def _normalize_guardrail_mode(value: Any) -> str:
     normalized = str(value or "enforce").strip().lower().replace("-", "_")
     if normalized in {"log", "log_only", "logging"}:
@@ -264,6 +345,8 @@ class GatewayConfig:
     admin_password_env: str = "SENTINELGUARD_ADMIN_PASSWORD"
     admin_viewer_username_env: str = "SENTINELGUARD_VIEWER_USERNAME"
     admin_viewer_password_env: str = "SENTINELGUARD_VIEWER_PASSWORD"
+    provider_secret_storage_enabled: bool = True
+    provider_secret_key_env: str = "SENTINELGUARD_ENCRYPTION_KEY"
     otel_enabled: bool = False
     langfuse_enabled: bool = False
     metrics_enabled: bool = True
@@ -325,7 +408,7 @@ class GatewayConfig:
             "provider": self.provider,
             "upstream_url": self.upstream_url,
             "api_key_env": self.api_key_env,
-            "api_key": self.api_key,
+            "api_key": "<configured>" if self.api_key else None,
             "providers": [provider.to_dict() for provider in self.providers],
             "virtual_keys": [virtual_key.to_dict() for virtual_key in self.virtual_keys],
             "client_api_key_env": self.client_api_key_env,
@@ -376,6 +459,8 @@ class GatewayConfig:
             "admin_password_env": self.admin_password_env,
             "admin_viewer_username_env": self.admin_viewer_username_env,
             "admin_viewer_password_env": self.admin_viewer_password_env,
+            "provider_secret_storage_enabled": self.provider_secret_storage_enabled,
+            "provider_secret_key_env": self.provider_secret_key_env,
             "otel_enabled": self.otel_enabled,
             "langfuse_enabled": self.langfuse_enabled,
             "metrics_enabled": self.metrics_enabled,

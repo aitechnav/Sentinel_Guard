@@ -211,7 +211,7 @@ def _safe_action(action: Optional[str]) -> str:
     if not action:
         return "block"
     normalized = action.lower()
-    if normalized in {"block", "warn", "allow", "sanitize", "redact", "review"}:
+    if normalized in {"audit", "block", "warn", "allow", "sanitize", "redact", "review"}:
         return normalized
     return "other"
 
