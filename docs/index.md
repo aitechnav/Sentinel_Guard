@@ -173,9 +173,9 @@ print(result.is_valid, result.failed_scanners)</code></pre>
         <span>Deploy with containers or Kubernetes</span>
         <strong>Deployment</strong>
       </a>
-      <a href="docker-release.html">
-        <span>Publish official Docker images</span>
-        <strong>Docker Release</strong>
+      <a href="container-images.html">
+        <span>Run SentinelGuard from a published image</span>
+        <strong>Container Images</strong>
       </a>
     </div>
   </section>
