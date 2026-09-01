@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g. 0.0.12). Must match pyproject.toml."
+        description: "Version to publish (e.g. 0.0.14). Must match pyproject.toml."
         required: true
         type: string
       branch:
