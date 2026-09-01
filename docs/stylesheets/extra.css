@@ -1,13 +1,21 @@
 .sg-github-star {
-  position: fixed;
-  top: 0.64rem;
-  right: 5.25rem;
-  z-index: 5;
-  height: 1.5rem;
+  align-items: center;
+  display: inline-flex;
+  height: 2.4rem;
   line-height: 1;
+  margin: 0 0.35rem 0 0.55rem;
+  visibility: hidden;
 }
 
-@media screen and (max-width: 76.1875em) {
+.sg-github-star--ready {
+  visibility: visible;
+}
+
+.sg-github-star iframe {
+  display: block;
+}
+
+@media screen and (max-width: 44.9375em) {
   .sg-github-star {
     display: none;
   }
