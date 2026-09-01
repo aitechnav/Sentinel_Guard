@@ -173,6 +173,11 @@ class TestGatewayConfig:
                             "key": "sg-test-key",
                             "team_id": "team-a",
                             "allowed_models": ["fast-chat"],
+                            "policy_actions": {
+                                "prompt_attack": "block",
+                                "secrets": "block",
+                                "pii": "redact",
+                            },
                             "max_requests": 10,
                             "budget_reset": "daily",
                         }
@@ -196,9 +201,19 @@ class TestGatewayConfig:
         assert config.providers[0].upstream_model == "gpt-4o-mini"
         assert config.providers[0].max_parallel_requests == 5
         assert config.virtual_keys[0].allowed_models == ["fast-chat"]
+        assert config.virtual_keys[0].policy_actions == {
+            "attack": "block",
+            "secret": "block",
+            "pii": "redact",
+        }
         assert config.virtual_keys[0].budget_reset == "daily"
         assert config.to_dict()["complexity_router"]["enabled"] is True
         assert config.to_dict()["virtual_keys"][0]["key"] == "<configured>"
+        assert config.to_dict()["virtual_keys"][0]["policy_actions"] == {
+            "attack": "block",
+            "secret": "block",
+            "pii": "redact",
+        }
 
     def test_from_dict_with_named_guardrails_and_sensitive_routing(self):
         config = GatewayConfig.from_dict(
@@ -318,6 +333,7 @@ class TestGatewayClientAuth:
                         "tenant_id": "tenant-1",
                         "team_id": "research",
                         "allowed_models": ["fast-chat"],
+                        "policy_actions": {"pii": "audit", "secrets": "block"},
                     }
                 ]
             }
@@ -329,6 +345,7 @@ class TestGatewayClientAuth:
         assert auth.client is not None
         assert auth.client.name == "research-team"
         assert auth.client.team_id == "research"
+        assert auth.client.policy_actions == {"pii": "audit", "secret": "block"}
         assert not authenticate_gateway_request({"authorization": "Bearer bad"}, config).allowed
 
 
@@ -559,6 +576,55 @@ class TestGatewayGuardrailApi:
         assert response.status_code == 400
         assert response.json()["error"]["type"] == "sentinelguard_unknown_guardrail"
 
+    def test_guardrails_apply_uses_authenticated_client_policy(self, monkeypatch):
+        fastapi_testclient = pytest.importorskip("fastapi.testclient")
+
+        async def fake_scan_prompt(self, text, **kwargs):
+            return AggregatedResult(
+                is_valid=False,
+                results=[
+                    ScanResult(
+                        is_valid=False,
+                        score=0.9,
+                        risk_level=RiskLevel.HIGH,
+                        scanner_name="pii",
+                        sanitized_output="Contact <EMAIL_ADDRESS>",
+                    )
+                ],
+                failed_scanners=["pii"],
+                scanner_actions={"pii": "block"},
+                sanitized_output="Contact <EMAIL_ADDRESS>",
+            )
+
+        monkeypatch.setattr(SentinelGuard, "scan_prompt_async", fake_scan_prompt)
+        app = create_gateway_app(
+            guard_config=GuardConfig.preset_empty(),
+            gateway_config=GatewayConfig.from_dict(
+                {
+                    "virtual_keys": [
+                        {
+                            "name": "pii-audit-client",
+                            "key": "sg-pii-audit",
+                            "policy_actions": {"pii": "audit"},
+                        }
+                    ]
+                }
+            ),
+        )
+        client = fastapi_testclient.TestClient(app)
+
+        response = client.post(
+            "/gateway/v1/guardrails/apply",
+            headers={"authorization": "Bearer sg-pii-audit"},
+            json={"input": "Contact jane@example.com"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["allowed"] is True
+        assert body["action"] == "audit"
+        assert "policy:pii_audit" in body["reason_codes"]
+
     def test_logging_only_guardrail_does_not_block(self, monkeypatch):
         fastapi_testclient = pytest.importorskip("fastapi.testclient")
 
@@ -737,6 +803,11 @@ class TestGatewayAdminDashboard:
                 "tenant_id": "tenant-a",
                 "team_id": "platform",
                 "allowed_models": "fast-chat",
+                "policy_actions": {
+                    "attack": "block",
+                    "secret": "block",
+                    "pii": "redact",
+                },
             },
         )
         assert created.status_code == 201
@@ -748,6 +819,7 @@ class TestGatewayAdminDashboard:
 
         assert "editForm" in client.get("/admin").text
         assert "editModels" in client.get("/admin").text
+        assert "editPolicyPii" in client.get("/admin").text
 
         auth = authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config)
         assert auth.allowed
@@ -755,6 +827,11 @@ class TestGatewayAdminDashboard:
         assert auth.client.name == "chatbot-prod"
         assert auth.client.team_id == "platform"
         assert auth.client.allowed_models == ("fast-chat",)
+        assert auth.client.policy_actions == {
+            "attack": "block",
+            "secret": "block",
+            "pii": "redact",
+        }
 
         updated = client.patch(
             f"/admin/api/clients/{client_id}",
@@ -763,6 +840,13 @@ class TestGatewayAdminDashboard:
                 "tenant_id": "tenant-a",
                 "team_id": "ai-platform",
                 "user_id": "chatbot-service",
+                "policy_actions": {
+                    "attack": "block",
+                    "secret": "block",
+                    "pii": "audit",
+                    "pci": "block",
+                    "phi": "redact",
+                },
             },
         )
         assert updated.status_code == 200
@@ -774,6 +858,13 @@ class TestGatewayAdminDashboard:
             "private-chat",
         ]
         assert updated_client["team_id"] == "ai-platform"
+        assert updated_client["policy_actions"] == {
+            "attack": "block",
+            "secret": "block",
+            "pii": "audit",
+            "pci": "block",
+            "phi": "redact",
+        }
 
         updated_auth = authenticate_gateway_request({"authorization": f"Bearer {raw_token}"}, config)
         assert updated_auth.allowed
@@ -786,6 +877,8 @@ class TestGatewayAdminDashboard:
             "smart-chat",
             "private-chat",
         )
+        assert updated_auth.client.policy_actions["pii"] == "audit"
+        assert updated_auth.client.policy_actions["pci"] == "block"
 
         gateway_usage_store(config).record(
             updated_auth.client,

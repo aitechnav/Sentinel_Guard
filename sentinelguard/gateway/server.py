@@ -20,7 +20,7 @@ from sentinelguard.gateway.admin import (
     GatewayAdminStore,
     gateway_admin_store,
 )
-from sentinelguard.gateway.config import GatewayConfig
+from sentinelguard.gateway.config import GatewayConfig, normalize_policy_actions
 from sentinelguard.gateway.guardrails import (
     apply_gateway_guardrails,
     guardrail_summary,
@@ -201,6 +201,7 @@ def create_gateway_app(
             stage=str(payload.get("stage") or "manual"),
             prompt=_payload_text(payload, "prompt"),
             requested_guardrails=requested,
+            client=auth.client,
         )
         return JSONResponse(content=result.to_dict(include_text=True), status_code=200)
 
@@ -271,6 +272,7 @@ def create_gateway_app(
                     team_id=_payload_text(payload, "team_id"),
                     user_id=_payload_text(payload, "user_id"),
                     allowed_models=_payload_allowed_models(payload.get("allowed_models")),
+                    policy_actions=_payload_policy_actions(payload.get("policy_actions")),
                     max_requests=_optional_int(payload.get("max_requests")),
                     max_tokens=_optional_int(payload.get("max_tokens")),
                     max_budget=_optional_float(payload.get("max_budget")),
@@ -308,6 +310,11 @@ def create_gateway_app(
                     allowed_models=(
                         _payload_allowed_models(payload.get("allowed_models"))
                         if "allowed_models" in payload
+                        else None
+                    ),
+                    policy_actions=(
+                        _payload_policy_actions(payload.get("policy_actions"))
+                        if "policy_actions" in payload
                         else None
                     ),
                     max_requests=_optional_int(payload.get("max_requests")),
@@ -495,6 +502,7 @@ def create_gateway_app(
             direction="prompt",
             stage="pre_call",
             requested_guardrails=requested_guardrails,
+            client=auth.client,
             streaming=False,
         )
         prompt_scan = prompt_guardrail.scan
@@ -549,6 +557,7 @@ def create_gateway_app(
                 stage="post_call",
                 prompt=safe_prompt,
                 requested_guardrails=requested_guardrails,
+                client=auth.client,
                 streaming=False,
             )
             output_scan = output_guardrail.scan
@@ -594,6 +603,7 @@ def create_gateway_app(
             stage="post_call",
             prompt=safe_prompt,
             requested_guardrails=requested_guardrails,
+            client=auth.client,
             streaming=False,
         )
         output_scan = output_guardrail.scan
@@ -687,6 +697,7 @@ async def _handle_streaming_chat(
         direction="prompt",
         stage="pre_call",
         requested_guardrails=requested_guardrails,
+        client=client,
         streaming=True,
     )
     prompt_scan = prompt_guardrail.scan
@@ -749,6 +760,7 @@ async def _handle_streaming_chat(
         stage="post_call",
         prompt=safe_prompt,
         requested_guardrails=requested_guardrails,
+        client=client,
         streaming=True,
     )
     output_scan = output_guardrail.scan
@@ -815,6 +827,7 @@ async def _passthrough_gateway_request(
             stage="passthrough",
             requested_guardrails=requested,
             metric_direction=gateway_name,
+            client=auth.client,
         )
         scan = guardrail_result.scan
         decision = guardrail_result.decision
@@ -1087,6 +1100,7 @@ def _usage_payload(client: GatewayClient, usage_store: Any) -> dict[str, Any]:
             "tenant_id": client.tenant_id,
             "team_id": client.team_id,
             "user_id": client.user_id,
+            "policy_actions": normalize_policy_actions(client.policy_actions),
         },
         "usage": usage_store.snapshot(
             client.key_id,
@@ -1369,6 +1383,12 @@ def _admin_html() -> str:
               <label>Team <input id="editTeam" placeholder="platform"></label>
               <label>User owner <input id="editUser" placeholder="service-account"></label>
               <label>Budget reset <select id="editBudgetReset"><option value="">All time</option><option>daily</option><option>monthly</option></select></label>
+              <label>Attack action <select id="editPolicyAttack"></select></label>
+              <label>Secrets action <select id="editPolicySecret"></select></label>
+              <label>PII action <select id="editPolicyPii"></select></label>
+              <label>PCI action <select id="editPolicyPci"></select></label>
+              <label>PHI action <select id="editPolicyPhi"></select></label>
+              <label>Other action <select id="editPolicyOther"></select></label>
             </div>
             <button id="saveClientBtn" class="primary" type="submit">Save changes</button>
             <p id="editHelp" class="muted"></p>
@@ -1393,6 +1413,12 @@ def _admin_html() -> str:
             <label>Team <input id="newTeam" placeholder="platform"></label>
             <label>User owner <input id="newUser" placeholder="service-account"></label>
             <label>Budget reset <select id="newBudgetReset"><option value="">All time</option><option>daily</option><option>monthly</option></select></label>
+            <label>Attack action <select id="newPolicyAttack"></select></label>
+            <label>Secrets action <select id="newPolicySecret"></select></label>
+            <label>PII action <select id="newPolicyPii"></select></label>
+            <label>PCI action <select id="newPolicyPci"></select></label>
+            <label>PHI action <select id="newPolicyPhi"></select></label>
+            <label>Other action <select id="newPolicyOther"></select></label>
           </div>
           <button class="primary" type="submit">Generate token</button>
         </form>
@@ -1402,7 +1428,7 @@ def _admin_html() -> str:
         <h2>All Clients</h2>
         <div style="overflow:auto">
           <table>
-            <thead><tr><th>Name</th><th>Source</th><th>Status</th><th>Models</th><th>Requests</th><th>Last used</th></tr></thead>
+            <thead><tr><th>Name</th><th>Source</th><th>Status</th><th>Models</th><th>Policy</th><th>Requests</th><th>Last used</th></tr></thead>
             <tbody id="clientsTable"></tbody>
           </table>
         </div>
@@ -1423,6 +1449,14 @@ def _admin_html() -> str:
   <script>
     const state = { user: null, clients: [], providers: [], selected: null };
     const $ = (id) => document.getElementById(id);
+    const policyFields = ['attack', 'secret', 'pii', 'pci', 'phi', 'other'];
+    const policyOptions = [
+      ['', 'Gateway default'],
+      ['block', 'Block'],
+      ['redact', 'Redact'],
+      ['audit', 'Audit and allow'],
+      ['allow', 'Allow'],
+    ];
 
     async function api(path, options = {}) {
       const response = await fetch(path, {
@@ -1519,6 +1553,7 @@ def _admin_html() -> str:
           <tr><th>Source</th><td>${escapeHtml(client.source || 'config')}</td></tr>
           <tr><th>Status</th><td class="${client.enabled ? 'ok' : 'danger-text'}">${client.enabled ? 'enabled' : 'disabled'}</td></tr>
           <tr><th>Models</th><td>${escapeHtml((client.allowed_models || []).join(', ') || '*')}</td></tr>
+          <tr><th>Policy</th><td>${escapeHtml(policyText(client.policy_actions))}</td></tr>
           <tr><th>Tenant</th><td>${escapeHtml(client.tenant_id || '')}</td></tr>
           <tr><th>Team</th><td>${escapeHtml(client.team_id || '')}</td></tr>
         </tbody></table>`;
@@ -1544,7 +1579,11 @@ def _admin_html() -> str:
       $('editTeam').value = client?.team_id || '';
       $('editUser').value = client?.user_id || '';
       $('editBudgetReset').value = client?.budget_reset || '';
-      ['editModels', 'editTenant', 'editTeam', 'editUser', 'editBudgetReset', 'saveClientBtn'].forEach((id) => {
+      populatePolicyForm('edit', client?.policy_actions || {});
+      [
+        'editModels', 'editTenant', 'editTeam', 'editUser', 'editBudgetReset',
+        ...policyFields.map((key) => policyControlId('edit', key)), 'saveClientBtn'
+      ].forEach((id) => {
         $(id).disabled = !editable;
       });
       $('editHelp').textContent = client && !client.managed
@@ -1559,6 +1598,7 @@ def _admin_html() -> str:
           <td>${escapeHtml(client.source || 'config')}</td>
           <td class="${client.enabled ? 'ok' : 'danger-text'}">${client.enabled ? 'enabled' : 'disabled'}</td>
           <td>${escapeHtml((client.allowed_models || []).join(', ') || '*')}</td>
+          <td>${escapeHtml(policyText(client.policy_actions))}</td>
           <td>${client.usage?.requests || 0}</td>
           <td>${formatTime(client.last_used_at)}</td>
         </tr>`).join('');
@@ -1634,6 +1674,7 @@ def _admin_html() -> str:
         body: JSON.stringify({
           name: $('newName').value,
           allowed_models: $('newModels').value,
+          policy_actions: readPolicyForm('new'),
           tenant_id: $('newTenant').value,
           team_id: $('newTeam').value,
           user_id: $('newUser').value,
@@ -1672,6 +1713,7 @@ def _admin_html() -> str:
         method: 'PATCH',
         body: JSON.stringify({
           allowed_models: $('editModels').value,
+          policy_actions: readPolicyForm('edit'),
           tenant_id: $('editTenant').value,
           team_id: $('editTeam').value,
           user_id: $('editUser').value,
@@ -1690,6 +1732,41 @@ def _admin_html() -> str:
       setTimeout(() => { $('copyTokenBtn').textContent = 'Copy'; }, 1200);
     });
 
+    function initPolicyControls() {
+      populatePolicyForm('new', { attack: 'block', secret: 'block', pii: 'redact', pci: 'block', phi: 'redact' });
+      populatePolicyForm('edit', {});
+    }
+
+    function policyControlId(prefix, key) {
+      return `${prefix}Policy${key.charAt(0).toUpperCase()}${key.slice(1)}`;
+    }
+
+    function populatePolicyForm(prefix, policy) {
+      policyFields.forEach((key) => {
+        const node = $(policyControlId(prefix, key));
+        if (!node) return;
+        node.innerHTML = policyOptions.map(([value, label]) => {
+          const selected = (policy?.[key] || '') === value ? 'selected' : '';
+          return `<option value="${escapeHtml(value)}" ${selected}>${escapeHtml(label)}</option>`;
+        }).join('');
+      });
+    }
+
+    function readPolicyForm(prefix) {
+      const policy = {};
+      policyFields.forEach((key) => {
+        const value = $(policyControlId(prefix, key))?.value || '';
+        if (value) policy[key] = value;
+      });
+      return policy;
+    }
+
+    function policyText(policy) {
+      const entries = Object.entries(policy || {});
+      return entries.length ? entries.map(([key, action]) => `${key}: ${action}`).join(', ') : 'gateway default';
+    }
+
+    initPolicyControls();
     loadMe();
   </script>
 </body>
@@ -1804,6 +1881,7 @@ def _configured_client_summaries(config: GatewayConfig, usage_store: Any) -> lis
                     "team_id": key.team_id,
                     "user_id": key.user_id,
                     "allowed_models": list(key.allowed_models),
+                    "policy_actions": normalize_policy_actions(key.policy_actions),
                     "max_requests": key.max_requests,
                     "max_tokens": key.max_tokens,
                     "max_budget": key.max_budget,
@@ -1833,6 +1911,7 @@ def _configured_client_summaries(config: GatewayConfig, usage_store: Any) -> lis
                     "team_id": None,
                     "user_id": None,
                     "allowed_models": ["*"],
+                    "policy_actions": {},
                     "max_requests": None,
                     "max_tokens": None,
                     "max_budget": None,
@@ -1960,6 +2039,10 @@ def _payload_allowed_models(value: Any) -> Optional[list[str]]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return None
+
+
+def _payload_policy_actions(value: Any) -> dict[str, str]:
+    return normalize_policy_actions(value)
 
 
 def _optional_int(value: Any) -> Optional[int]:

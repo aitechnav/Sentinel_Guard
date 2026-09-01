@@ -35,6 +35,13 @@ Base URL: http://sentinelguard-gateway:8080/v1
 API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
 ```
 
+For Docker Compose, put upstream provider keys such as `OPENAI_API_KEY` in the
+Compose `.env` file or Docker secrets so only the SentinelGuard container
+receives them. To update provider keys from the dashboard instead, also set a
+stable `SENTINELGUARD_ENCRYPTION_KEY`. `sentinelguard init --with-env` generates
+one for local Compose. Dashboard-entered provider keys are then stored encrypted
+in the gateway SQLite volume and shown only as masked hints.
+
 ## Kubernetes
 
 ```bash
@@ -49,6 +56,12 @@ In-cluster apps use:
 Base URL: http://sentinelguard-gateway.sentinelguard.svc.cluster.local:8080/v1
 API key:  the same sgw_... value from SENTINELGUARD_GATEWAY_API_KEY
 ```
+
+For Kubernetes, keep upstream provider keys in Kubernetes Secrets, external
+secret operators, or your cloud secret manager and expose them to SentinelGuard
+as environment variables referenced by `api_key_env`. Dashboard-entered provider
+keys are supported for self-managed deployments, but they are stored in the
+gateway SQLite state volume, not written back to a Kubernetes Secret.
 
 For EC2, ECS, another EKS cluster, or another VPC, expose the gateway through a
 private DNS name, internal load balancer, PrivateLink, VPN, or peering route:

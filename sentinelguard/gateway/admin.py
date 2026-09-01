@@ -11,11 +11,11 @@ import secrets
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from sentinelguard.gateway.config import GatewayConfig
+from sentinelguard.gateway.config import GatewayConfig, normalize_policy_actions
 from sentinelguard.gateway.operations import GatewayClient
 
 ADMIN_COOKIE_NAME = "sentinelguard_admin_session"
@@ -45,6 +45,7 @@ class StoredGatewayToken:
     team_id: Optional[str] = None
     user_id: Optional[str] = None
     allowed_models: tuple[str, ...] = ()
+    policy_actions: dict[str, str] = field(default_factory=dict)
     max_requests: Optional[int] = None
     max_tokens: Optional[int] = None
     max_budget: Optional[float] = None
@@ -65,6 +66,7 @@ class StoredGatewayToken:
             "team_id": self.team_id,
             "user_id": self.user_id,
             "allowed_models": list(self.allowed_models),
+            "policy_actions": normalize_policy_actions(self.policy_actions),
             "max_requests": self.max_requests,
             "max_tokens": self.max_tokens,
             "max_budget": self.max_budget,
@@ -190,6 +192,7 @@ class GatewayAdminStore:
             team_id=stored.team_id,
             user_id=stored.user_id,
             allowed_models=stored.allowed_models,
+            policy_actions=normalize_policy_actions(stored.policy_actions),
             max_requests=stored.max_requests,
             max_tokens=stored.max_tokens,
             max_budget=stored.max_budget,
@@ -204,6 +207,7 @@ class GatewayAdminStore:
         team_id: Optional[str] = None,
         user_id: Optional[str] = None,
         allowed_models: Optional[list[str]] = None,
+        policy_actions: Optional[dict[str, str]] = None,
         max_requests: Optional[int] = None,
         max_tokens: Optional[int] = None,
         max_budget: Optional[float] = None,
@@ -216,17 +220,18 @@ class GatewayAdminStore:
         client_id = _client_id()
         now = int(time.time())
         allowed = _normalize_allowed_models(allowed_models)
+        policy = normalize_policy_actions(policy_actions)
         with self._lock:
             try:
                 self._conn().execute(
                     """
                     INSERT INTO gateway_clients (
                         id, name, token_hash, token_prefix, enabled,
-                        tenant_id, team_id, user_id, allowed_models_json,
+                        tenant_id, team_id, user_id, allowed_models_json, policy_actions_json,
                         max_requests, max_tokens, max_budget, budget_reset,
                         created_at, updated_at, rotated_at, last_used_at
                     )
-                    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                     """,
                     (
                         client_id,
@@ -237,6 +242,7 @@ class GatewayAdminStore:
                         _blank_to_none(team_id),
                         _blank_to_none(user_id),
                         json.dumps(allowed, sort_keys=True),
+                        json.dumps(policy, sort_keys=True),
                         max_requests,
                         max_tokens,
                         max_budget,
@@ -283,6 +289,7 @@ class GatewayAdminStore:
         team_id: Optional[str] = None,
         user_id: Optional[str] = None,
         allowed_models: Optional[list[str]] = None,
+        policy_actions: Optional[dict[str, str]] = None,
         max_requests: Optional[int] = None,
         max_tokens: Optional[int] = None,
         max_budget: Optional[float] = None,
@@ -304,6 +311,11 @@ class GatewayAdminStore:
         if allowed_models is not None:
             updates["allowed_models_json"] = json.dumps(
                 _normalize_allowed_models(allowed_models),
+                sort_keys=True,
+            )
+        if policy_actions is not None:
+            updates["policy_actions_json"] = json.dumps(
+                normalize_policy_actions(policy_actions),
                 sort_keys=True,
             )
         if max_requests is not None:
@@ -427,6 +439,7 @@ class GatewayAdminStore:
                     team_id TEXT,
                     user_id TEXT,
                     allowed_models_json TEXT NOT NULL,
+                    policy_actions_json TEXT NOT NULL DEFAULT '{}',
                     max_requests INTEGER,
                     max_tokens INTEGER,
                     max_budget REAL,
@@ -438,7 +451,22 @@ class GatewayAdminStore:
                 )
                 """
             )
+            self._ensure_column(
+                "gateway_clients",
+                "policy_actions_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )
             self._conn().commit()
+
+    def _ensure_column(self, table_name: str, column_name: str, definition: str) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._conn().execute(f"PRAGMA table_info({table_name})")
+        }
+        if column_name not in columns:
+            self._conn().execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
+            )
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self, "_connection", None)
@@ -470,6 +498,7 @@ def _admin_state_path(config: GatewayConfig) -> str:
 
 def _stored_token_from_row(row: sqlite3.Row) -> StoredGatewayToken:
     allowed_models = tuple(json.loads(row["allowed_models_json"] or "[]"))
+    policy_actions = normalize_policy_actions(json.loads(row["policy_actions_json"] or "{}"))
     return StoredGatewayToken(
         id=str(row["id"]),
         name=str(row["name"]),
@@ -479,6 +508,7 @@ def _stored_token_from_row(row: sqlite3.Row) -> StoredGatewayToken:
         team_id=row["team_id"],
         user_id=row["user_id"],
         allowed_models=allowed_models,
+        policy_actions=policy_actions,
         max_requests=row["max_requests"],
         max_tokens=row["max_tokens"],
         max_budget=row["max_budget"],
