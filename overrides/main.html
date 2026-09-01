@@ -2,12 +2,11 @@
 
 {% block extrahead %}
   {{ super() }}
-  <script async defer src="https://buttons.github.io/buttons.js"></script>
 {% endblock %}
 
 {% block header %}
   {{ super() }}
-  <div class="sg-github-star">
+  <div class="sg-github-star" data-md-component="sg-github-star">
     <a
       class="github-button"
       href="https://github.com/aitechnav/Sentinel_Guard"
@@ -19,4 +18,24 @@
       aria-label="Star aitechnav/Sentinel_Guard on GitHub"
     >Star</a>
   </div>
+  <script>
+    (function () {
+      function placeSentinelGuardStar() {
+        var star = document.querySelector('[data-md-component="sg-github-star"]');
+        var palette = document.querySelector('.md-header__option');
+        if (!star || !palette || !palette.parentNode) return;
+        if (star.nextElementSibling !== palette) {
+          palette.parentNode.insertBefore(star, palette);
+        }
+        star.classList.add('sg-github-star--ready');
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', placeSentinelGuardStar);
+      } else {
+        placeSentinelGuardStar();
+      }
+    })();
+  </script>
+  <script async defer src="https://buttons.github.io/buttons.js"></script>
 {% endblock %}
